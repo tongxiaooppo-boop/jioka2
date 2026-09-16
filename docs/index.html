@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="揪咖 JioKa — 揪團排程小工具：用月曆勾選方便的日期時段、票選地點，輕鬆敲定聚會！（Firebase 版）">
+  <title>揪咖 JioKa — 揪團排程小工具</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🎉</text></svg>">
+</head>
+<body>
+  <!-- 漫畫風背景裝飾（halftone 網點 + 速度線，純 CSS 產生） -->
+  <div class="bg-decoration" aria-hidden="true">
+    <div class="speed-lines"></div>
+    <div class="float-dot dot-pink"></div>
+    <div class="float-dot dot-mint"></div>
+    <div class="float-dot dot-yellow"></div>
+  </div>
+
+  <div id="app">
+    <header id="topbar" class="topbar"></header>
+    <main id="view" class="view">
+      <div class="loading-card">
+        <div class="loading-star">★</div>
+        <p>揪咖載入中…</p>
+      </div>
+    </main>
+    <footer class="footer">揪咖 JioKa — 揪團排程小工具（Firebase 版）</footer>
+  </div>
+
+  <div id="toast-root" aria-live="polite"></div>
+  <div id="modal-root"></div>
+
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="config.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

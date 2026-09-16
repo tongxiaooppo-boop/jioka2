@@ -1,0 +1,166 @@
+rules_version = '2';
+
+// 揪咖 JioKa2 — Firestore 安全規則
+// 設計原則：
+//  - 活動本身（events/{eventId}）與大部分子集合對「任何持有連結的人」公開可讀（比照原本 GAS 版 getEvent 允許匿名查看）
+//  - Email 一律不進公開文件。公開集合只存 nickname / uid，Email 只放在 roles / participantsPrivate 這兩個「私有」子集合，
+//    只有主揪／次管理者自己讀得到，一般訪客與其他參與者看不到別人的 Email。
+//  - 權限判斷（是否為主揪／次管理者）一律透過 events/{eventId}/private/roles 這份私有文件用 get() 讀取，
+//    get() 在規則內部不受該文件自身讀取規則限制，所以子集合規則可以安全地引用它。
+//  - 投票用 doc id = 使用者 uid（每人一份，覆寫即可），取代原本 GAS 版「刪光舊票再逐列寫入」需要全域鎖的設計。
+//  - 暱稱唯一性靠 nicknames/{nicknameLower} 這個 reservation 文件的「doc id 天生唯一」特性達成，不需要鎖。
+
+service cloud.firestore {
+  match /databases/{db}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function myEmail() { return request.auth.token.email.lower(); }
+
+    function rolesDoc(eventId) {
+      return get(/databases/$(db)/documents/events/$(eventId)/private/roles).data;
+    }
+    function isOwner(eventId) {
+      return signedIn() && rolesDoc(eventId).ownerEmail == myEmail();
+    }
+    function isCoAdmin(eventId) {
+      return signedIn() && myEmail() in rolesDoc(eventId).coAdminEmails;
+    }
+    function isAdmin(eventId) {
+      return isOwner(eventId) || isCoAdmin(eventId);
+    }
+    function eventDoc(eventId) {
+      return get(/databases/$(db)/documents/events/$(eventId)).data;
+    }
+    function isVotingOpen(eventId) {
+      let ev = eventDoc(eventId);
+      return ev.status == 'open' && (ev.deadline == null || request.time < ev.deadline);
+    }
+    function isParticipant(eventId) {
+      return signedIn() &&
+        exists(/databases/$(db)/documents/events/$(eventId)/participants/$(request.auth.uid));
+    }
+
+    // ---------------- events ----------------
+    match /events/{eventId} {
+      // 公開欄位：title/type/description/status/deadline/confirmedDateId/confirmedPlaceId/ownerUid/createdAt
+      // 不含任何 Email。任何人（含匿名）可讀，比照原設計允許免登入查看投票頁。
+      allow get: if true;
+      // 「我的揪咖紀錄」用 .where('ownerUid','==',uid) 或 .where('coAdminUids','array-contains',uid) 查詢，
+      // 這兩個欄位是 uid 不是 email，不算隱私外洩。Firestore 會用查詢的等式條件對齊下面這條規則，
+      // 只放行「查詢結果內每一份文件都必然符合規則」的查詢，不需要另外檢查 request.query。
+      allow list: if signedIn() &&
+        (resource.data.ownerUid == request.auth.uid || request.auth.uid in resource.data.coAdminUids);
+
+      allow create: if signedIn() &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.status == 'open' &&
+        request.resource.data.title is string && request.resource.data.title.size() > 0 &&
+        request.resource.data.title.size() <= 50 &&
+        request.resource.data.description.size() <= 500 &&
+        request.resource.data.keys().hasOnly(
+          ['title','type','description','status','deadline','confirmedDateId','confirmedPlaceId',
+           'ownerUid','coAdminUids','createdAt']);
+
+      // 主揪可以改任何活動設定欄位。
+      // 次管理者例外：只能把「自己的 uid」加進 coAdminUids（第一次登入時自我登記用，
+      // 因為受邀當下對方可能還沒登入過、我們還不知道他的 uid，只知道 Email，
+      // Email 邀請名單存在 private/roles，真正的權限判斷永遠以那份文件為準，這裡只是方便查詢用的公開索引）。
+      allow update: if
+        (isOwner(eventId) &&
+          request.resource.data.ownerUid == resource.data.ownerUid &&
+          request.resource.data.createdAt == resource.data.createdAt) ||
+        (isCoAdmin(eventId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['coAdminUids']) &&
+          request.resource.data.coAdminUids == resource.data.coAdminUids.concat([request.auth.uid]));
+
+      allow delete: if false; // 一律軟刪（把 status 設為 deleted），不做硬刪除
+
+      // ---- 私有：角色（Email）----
+      match /private/roles {
+        allow get: if isAdmin(eventId);
+        allow create: if signedIn() && request.auth.uid == get(/databases/$(db)/documents/events/$(eventId)).data.ownerUid
+          && request.resource.data.ownerEmail == myEmail()
+          && request.resource.data.coAdminEmails == [];
+        allow update: if isOwner(eventId) &&
+          request.resource.data.ownerEmail == resource.data.ownerEmail;
+        allow delete: if false;
+      }
+
+      // ---- 選項（日期/地點候選）----
+      match /options/{optionId} {
+        allow read: if true;
+        allow create: if signedIn() && isParticipant(eventId) &&
+          (isVotingOpen(eventId) || isAdmin(eventId)) &&
+          request.resource.data.createdByUid == request.auth.uid &&
+          request.resource.data.isDeleted == false &&
+          request.resource.data.optionType in ['date','place'] &&
+          request.resource.data.keys().hasOnly(
+            ['optionType','date','timeSlot','placeName','mapLink','createdByUid','createdAt','isDeleted']);
+        // 軟刪除：只有管理者，且次管理者不能刪主揪建立的選項
+        allow update: if isAdmin(eventId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isDeleted']) &&
+          request.resource.data.isDeleted == true &&
+          (isOwner(eventId) || resource.data.createdByUid != get(/databases/$(db)/documents/events/$(eventId)).data.ownerUid);
+        allow delete: if false;
+      }
+
+      // ---- 投票：doc id = uid，一人一份，直接覆寫 ----
+      match /votes/{uid} {
+        allow read: if true;
+        allow write: if signedIn() && request.auth.uid == uid && isParticipant(eventId) &&
+          isVotingOpen(eventId) &&
+          request.resource.data.optionIds is list && request.resource.data.optionIds.size() <= 100 &&
+          request.resource.data.keys().hasOnly(['optionIds','votedAt']);
+        allow delete: if signedIn() && request.auth.uid == uid;
+      }
+
+      // ---- 留言 ----
+      match /comments/{commentId} {
+        allow read: if true;
+        allow create: if signedIn() && isParticipant(eventId) && isVotingOpen(eventId) &&
+          request.resource.data.uid == request.auth.uid &&
+          request.resource.data.content is string && request.resource.data.content.size() > 0 &&
+          request.resource.data.content.size() <= 500 &&
+          request.resource.data.isDeleted == false &&
+          request.resource.data.keys().hasOnly(['uid','optionId','content','createdAt','isDeleted']);
+        // 軟刪除：僅管理者（留言者本人不可刪，避免滅證，比照原設計）
+        allow update: if isAdmin(eventId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isDeleted']) &&
+          request.resource.data.isDeleted == true;
+        allow delete: if false;
+      }
+
+      // ---- 參與者：公開部分（暱稱），不含 Email ----
+      match /participants/{uid} {
+        allow read: if true;
+        allow write: if signedIn() && request.auth.uid == uid &&
+          request.resource.data.nickname is string &&
+          request.resource.data.nickname.size() > 0 && request.resource.data.nickname.size() <= 20 &&
+          request.resource.data.keys().hasOnly(['nickname','joinedAt','lastVisitAt']);
+      }
+
+      // ---- 參與者：私有部分（Email），只有本人與管理者看得到 ----
+      match /participantsPrivate/{uid} {
+        allow get: if signedIn() && (request.auth.uid == uid || isAdmin(eventId));
+        allow list: if isAdmin(eventId);
+        allow create: if signedIn() && request.auth.uid == uid && request.resource.data.email == myEmail();
+        allow update, delete: if false;
+      }
+
+      // ---- 暱稱唯一性保留文件：doc id 本身天生唯一，天然達成搶佔式唯一性 ----
+      match /nicknames/{nickKey} {
+        allow get: if true;
+        allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+        allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+        allow update: if false;
+      }
+    }
+
+    // ---------------- 「我參加過的活動」索引（fan-out，避免 collectionGroup 查詢要另外建索引）----------------
+    // 使用者第一次加入某活動（設定暱稱）時，順手在自己名下寫一筆 {eventId: true}，
+    // 之後「我的揪咖紀錄」的「我參加的」分頁直接讀這個子集合，不用查全站的 participants。
+    match /userJoinedEvents/{uid}/items/{eventId} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+  }
+}
