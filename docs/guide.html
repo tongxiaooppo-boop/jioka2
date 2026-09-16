@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>揪咖 JioKa2 部署手冊（Firebase 版）</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🎉</text></svg>">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Noto+Sans+TC:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --bg: #FFF8E7; --surface: #FFFFFF; --surface-soft: #FBF3DE;
+    --ink: #1E1B14; --ink-soft: #6b6250; --ink-faint: #9a927c;
+    --border: #1E1B14; --border-soft: #e4d9bd;
+    --yellow: #FFD23F; --yellow-ink: #4a3c00;
+    --pink: #FF6F91; --mint: #1f8f82; --mint-bg: #dff3ef;
+    --code-bg: #f2ead4; --code-ink: #4a3c1c;
+    --shadow: rgba(30, 27, 20, 0.18);
+    --danger: #c23b3b; --danger-bg: #fbe6e6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1a170f; --surface: #242019; --surface-soft: #2b2519;
+      --ink: #f3ecd9; --ink-soft: #c6bda3; --ink-faint: #8d846c;
+      --border: #f3ecd9; --border-soft: #3c3524;
+      --yellow: #FFD23F; --yellow-ink: #2a2200;
+      --pink: #ff8aa4; --mint: #5fd6c6; --mint-bg: #163531;
+      --code-bg: #2c2718; --code-ink: #ecd9a8;
+      --shadow: rgba(0, 0, 0, 0.45);
+      --danger: #ff8a8a; --danger-bg: #3a1f1f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1a170f; --surface: #242019; --surface-soft: #2b2519;
+    --ink: #f3ecd9; --ink-soft: #c6bda3; --ink-faint: #8d846c;
+    --border: #f3ecd9; --border-soft: #3c3524;
+    --yellow: #FFD23F; --yellow-ink: #2a2200;
+    --pink: #ff8aa4; --mint: #5fd6c6; --mint-bg: #163531;
+    --code-bg: #2c2718; --code-ink: #ecd9a8;
+    --shadow: rgba(0, 0, 0, 0.45);
+    --danger: #ff8a8a; --danger-bg: #3a1f1f;
+  }
+
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body { background: var(--bg); color: var(--ink); font-family: 'Noto Sans TC', 'PingFang TC', sans-serif; line-height: 1.7; padding-inline: 20px; margin: 0; }
+  a { color: inherit; }
+  h1, h2, h3 { font-family: 'Baloo 2', 'Noto Sans TC', sans-serif; text-wrap: balance; letter-spacing: 0.2px; }
+  code, .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+  .shell { max-width: 1180px; margin: 0 auto; display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 36px; padding-block: 28px 80px; }
+  @media (max-width: 860px) { .shell { grid-template-columns: 1fr; } }
+
+  .masthead { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; padding-bottom: 22px; border-bottom: 3px solid var(--border); margin-bottom: 6px; }
+  .masthead .eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--yellow-ink); background: var(--yellow); border: 2px solid var(--border); border-radius: 999px; padding: 4px 12px; width: fit-content; margin-bottom: 10px; }
+  .masthead h1 { font-size: clamp(28px, 4vw, 40px); font-weight: 800; margin: 0; }
+  .masthead .tagline { color: var(--ink-soft); font-size: 15px; margin-top: 6px; max-width: 62ch; }
+  .masthead .meta { text-align: right; font-size: 13px; color: var(--ink-faint); }
+  .masthead .meta .mono { display: block; color: var(--ink-soft); margin-top: 2px; }
+
+  nav.toc { align-self: start; position: sticky; top: 20px; display: flex; flex-direction: column; gap: 2px; font-size: 14px; }
+  nav.toc .group-label { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); margin: 16px 0 6px; }
+  nav.toc .group-label:first-child { margin-top: 0; }
+  nav.toc a { text-decoration: none; color: var(--ink-soft); padding: 7px 10px; border-radius: 8px; border-left: 3px solid transparent; }
+  nav.toc a:hover { background: var(--surface-soft); color: var(--ink); }
+  nav.toc a.current { color: var(--ink); font-weight: 700; border-left-color: var(--pink); background: var(--surface-soft); }
+
+  main { min-width: 0; display: flex; flex-direction: column; gap: 40px; }
+
+  .callout { border: 2px solid var(--border); background: var(--surface); border-radius: 14px; padding: 16px 18px; box-shadow: 3px 3px 0 var(--shadow); font-size: 14.5px; }
+  .callout.note { background: var(--mint-bg); border-color: var(--mint); }
+  .callout strong.tag { display: inline-block; font-family: 'Baloo 2', sans-serif; font-weight: 700; margin-bottom: 4px; }
+
+  section { scroll-margin-top: 18px; display: flex; flex-direction: column; gap: 14px; }
+  section > h2 { font-size: 22px; display: flex; align-items: center; gap: 10px; margin: 0; }
+  section > h2 .num { font-family: 'Baloo 2', sans-serif; font-weight: 800; font-size: 14px; color: var(--yellow-ink); background: var(--yellow); border: 2px solid var(--border); border-radius: 8px; min-width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; }
+  section > p.lead { color: var(--ink-soft); margin: 0; max-width: 68ch; font-size: 15px; }
+
+  .step { border: 2px solid var(--border); background: var(--surface); border-radius: 16px; padding: 18px 20px; box-shadow: 4px 4px 0 var(--shadow); display: flex; flex-direction: column; gap: 10px; }
+  .step h3 { margin: 0; font-size: 17px; display: flex; align-items: baseline; gap: 8px; }
+  .step h3 .letter { color: var(--pink); font-family: 'Baloo 2', sans-serif; font-weight: 800; }
+  .step ol, .step ul { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; }
+  .step ol { list-style: decimal; }
+  .step .sub { padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--ink-soft); }
+
+  code.inline, .kv code { background: var(--code-bg); color: var(--code-ink); padding: 1px 6px; border-radius: 5px; font-size: 0.92em; }
+  pre { background: var(--code-bg); color: var(--code-ink); border: 1px solid var(--border-soft); border-radius: 10px; padding: 12px 14px; overflow-x: auto; font-size: 13.5px; margin: 0; }
+
+  .field-note { border-left: 3px solid var(--yellow); padding: 4px 0 4px 12px; font-size: 13.5px; color: var(--ink-soft); }
+  .field-note.warn { border-left-color: var(--danger); }
+
+  .checklist { display: flex; flex-direction: column; gap: 0; border: 2px solid var(--border); border-radius: 14px; overflow: hidden; background: var(--surface); box-shadow: 4px 4px 0 var(--shadow); }
+  .checklist .item { display: flex; align-items: flex-start; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border-soft); font-size: 14.5px; }
+  .checklist .item:last-child { border-bottom: none; }
+  .checklist .box { flex: none; width: 20px; height: 20px; margin-top: 2px; border: 2px solid var(--border); border-radius: 5px; background: var(--surface-soft); }
+
+  .roles { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .role-card { border: 2px solid var(--border); border-radius: 16px; padding: 16px 18px; background: var(--surface); box-shadow: 4px 4px 0 var(--shadow); display: flex; flex-direction: column; gap: 10px; }
+  .role-card .role-title { font-family: 'Baloo 2', sans-serif; font-weight: 700; font-size: 17px; display: flex; align-items: center; gap: 8px; }
+  .role-card ol, .role-card ul { margin: 0; padding-left: 20px; font-size: 14px; display: flex; flex-direction: column; gap: 6px; }
+  .role-card.owner { border-color: var(--pink); }
+  .role-card.owner .role-title { color: var(--pink); }
+  .role-card.coadmin .role-title { color: var(--mint); }
+
+  .table-wrap { overflow-x: auto; border: 2px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 4px 4px 0 var(--shadow); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 560px; }
+  thead th { text-align: left; font-family: 'Baloo 2', sans-serif; font-weight: 700; background: var(--surface-soft); padding: 10px 14px; border-bottom: 2px solid var(--border); white-space: nowrap; }
+  tbody td { padding: 9px 14px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody td:first-child { font-family: 'JetBrains Mono', monospace; font-weight: 600; white-space: nowrap; }
+  .pill { display: inline-block; font-size: 11.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; border: 1.5px solid currentColor; }
+  .pill.open { color: var(--mint); }
+  .pill.owner { color: var(--pink); }
+
+  details { border: 2px solid var(--border); border-radius: 12px; background: var(--surface); padding: 12px 16px; box-shadow: 3px 3px 0 var(--shadow); }
+  details + details { margin-top: 10px; }
+  details summary { cursor: pointer; font-weight: 700; font-family: 'Baloo 2', sans-serif; font-size: 15px; list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  details summary::-webkit-details-marker { display: none; }
+  details summary::after { content: '+'; font-size: 20px; color: var(--pink); flex: none; }
+  details[open] summary::after { content: '–'; }
+  details p { margin: 10px 0 0; font-size: 14px; color: var(--ink-soft); }
+
+  .kv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap: 14px; }
+  .kv { border: 2px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--surface); box-shadow: 3px 3px 0 var(--shadow); }
+  .kv .k { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-faint); font-weight: 700; margin-bottom: 4px; }
+
+  footer.page-foot { grid-column: 1 / -1; border-top: 2px solid var(--border-soft); padding-top: 18px; font-size: 13px; color: var(--ink-faint); text-align: center; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    section { animation: rise .5s ease both; }
+    @keyframes rise { from { opacity: 0; transform: translateY(6px);} to { opacity:1; transform:none; } }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="masthead">
+    <div>
+      <span class="eyebrow">★ 部署 + 使用手冊（Firebase 版）</span>
+      <h1>揪咖 JioKa2 上線指南</h1>
+      <p class="tagline">跟 jioka 一代同一套前端玩法，後端換成 Firebase（Firestore + Authentication），解決 Google 試算表當後端回應慢的問題，一樣完全免費、不用綁信用卡。約 15 分鐘。</p>
+    </div>
+    <div class="meta">
+      這是獨立的第二個 repo（jioka2），舊版 jioka（Google 試算表版）不受影響、繼續運作
+    </div>
+  </div>
+
+  <nav class="toc" aria-label="目錄">
+    <span class="group-label">開始之前</span>
+    <a href="#before" data-nav>需要準備什麼 / 跟一代差在哪</a>
+    <span class="group-label">部署（一次性）</span>
+    <a href="#step-a" data-nav>A · 建立 Firebase 專案</a>
+    <a href="#step-b" data-nav>B · 啟用 Authentication</a>
+    <a href="#step-c" data-nav>C · 建立 Firestore + 部署規則</a>
+    <a href="#step-d" data-nav>D · 設定前端 config.js</a>
+    <a href="#step-e" data-nav>E · GitHub Pages</a>
+    <a href="#verify" data-nav>驗收測試清單</a>
+    <span class="group-label">使用手冊</span>
+    <a href="#roles" data-nav>主揪 / 參與者 / 次管理者</a>
+    <a href="#data-model" data-nav>資料放在哪些集合</a>
+    <span class="group-label">疑難排解</span>
+    <a href="#faq" data-nav>常見問題</a>
+    <a href="#privacy" data-nav>隱私與安全</a>
+  </nav>
+
+  <main>
+    <section id="before">
+      <h2><span class="num">·</span>開始之前</h2>
+      <p class="lead">前端一樣是純靜態網頁（放 GitHub Pages），差別是後端從「Google Apps Script + 試算表」換成「Firebase Authentication + Firestore」，而且<strong>前端直接讀寫資料庫</strong>（沒有中間的 API 伺服器），權限與資料驗證全部寫在 Firestore 安全規則（<code class="inline">firestore.rules</code>）裡。你只需要準備：</p>
+      <div class="checklist">
+        <div class="item"><span class="box"></span>一個 <strong>Google 帳號</strong>（拿來開 Firebase 專案，完全免費的 Spark 方案，不用綁信用卡）</div>
+        <div class="item"><span class="box"></span>一個 <strong>GitHub 帳號</strong>（放前端靜態網頁，用 GitHub Pages 發佈，跟一代一樣）</div>
+        <div class="item"><span class="box"></span>約 <strong>15 分鐘</strong>不被打斷的時間</div>
+      </div>
+      <div class="callout note">
+        <strong class="tag">✅ 跟一代比，變快 / 變簡單的地方</strong>
+        <ul style="margin:6px 0 0;padding-left:20px">
+          <li>Firestore 讀寫比 Google 試算表快很多，投票即時反映不用等 10 秒輪詢</li>
+          <li>不用再手動驗證 Google ID token（<code class="inline">tokeninfo</code> API），Firebase Authentication 直接處理，也不用發布「正式版」OAuth 應用程式那一步</li>
+          <li>沒有 Apps Script 每日執行時數 90 分鐘的隱形上限問題</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="step-a">
+      <h2><span class="num">A</span>建立 Firebase 專案</h2>
+      <div class="step">
+        <ol>
+          <li>前往 <span class="mono">console.firebase.google.com</span> →「新增專案」，專案名稱隨意（例如 <code class="inline">jioka2</code>）</li>
+          <li>是否啟用 Google Analytics：不需要，關掉即可</li>
+          <li>建立完成後，左上角齒輪 →「專案設定」→ 頁面最下方「你的應用程式」→ 點網頁圖示 <code class="inline">&lt;/&gt;</code> 新增一個網頁應用程式（不用勾 Firebase Hosting）</li>
+          <li>複製顯示出來的 <code class="inline">firebaseConfig</code> 物件（apiKey / authDomain / projectId...），步驟 D 要用</li>
+        </ol>
+      </div>
+    </section>
+
+    <section id="step-b">
+      <h2><span class="num">B</span>啟用 Authentication（Google 登入）</h2>
+      <div class="step">
+        <ol>
+          <li>左側選單「Authentication」→「開始使用」→「Sign-in method」分頁</li>
+          <li>啟用「Google」提供者，填一個對外顯示名稱 → 儲存</li>
+          <li>展開該提供者的「網路用戶端 ID」/「Web SDK 設定」，複製那組 <code class="inline">xxxxx.apps.googleusercontent.com</code> —— 這就是步驟 D 要填的 <code class="inline">GOOGLE_CLIENT_ID</code></li>
+          <li>Authentication →「Settings」→「已授權網域」：確認之後要用的 GitHub Pages 網域（<code class="inline">&lt;你的帳號&gt;.github.io</code>）有在清單裡，沒有就手動加入</li>
+        </ol>
+        <div class="field-note">不需要像一代那樣額外去 Google Cloud Console 申請 OAuth 用戶端、也不需要「發布正式版」——Firebase 幫你處理好了，任何 Google 帳號都能直接登入。</div>
+      </div>
+    </section>
+
+    <section id="step-c">
+      <h2><span class="num">C</span>建立 Firestore 資料庫 + 部署安全規則</h2>
+      <div class="step">
+        <ol>
+          <li>左側選單「Firestore Database」→「建立資料庫」→ 選一個離使用者近的地區（例如 <code class="inline">asia-east1</code>）→ 用「正式版模式（production）」啟動（規則之後會整份覆蓋掉，選哪個起始模式都沒差）</li>
+          <li>把本專案 <code class="inline">firestore.rules</code> 整份內容複製，貼到 Firestore Database →「規則」分頁，覆蓋掉預設內容 → 發布</li>
+          <li>（可選，若你熟 CLI）也可以用 Firebase CLI 部署：
+            <pre>npm i -g firebase-tools
+firebase login
+firebase use --add   # 選這個專案
+firebase deploy --only firestore:rules</pre>
+          </li>
+        </ol>
+        <div class="field-note warn">這份規則是整個服務唯一的權限與資料驗證層（沒有後端伺服器把關），務必整份貼上、不要只挑幾行改，也不要在主控台的規則編輯器裡手動加東西。</div>
+      </div>
+    </section>
+
+    <section id="step-d">
+      <h2><span class="num">D</span>設定前端 <code class="inline">docs/config.js</code></h2>
+      <div class="step">
+        <p style="margin:0;font-size:14px">把步驟 A 的 <code class="inline">firebaseConfig</code> 和步驟 B 的 Client ID 填進去：</p>
+        <pre>window.JIOKA_CONFIG = {
+  firebase: {
+    apiKey: '...',
+    authDomain: 'your-project.firebaseapp.com',
+    projectId: 'your-project',
+    storageBucket: 'your-project.appspot.com',
+    messagingSenderId: '...',
+    appId: '...',
+  },
+  GOOGLE_CLIENT_ID: 'xxxxx.apps.googleusercontent.com',
+};</pre>
+      </div>
+    </section>
+
+    <section id="step-e">
+      <h2><span class="num">E</span>部署到 GitHub Pages</h2>
+      <div class="step">
+        <ol>
+          <li>把整個 <code class="inline">jioka2</code> 專案推到一個<strong>新的</strong> GitHub repo（跟一代的 <code class="inline">jioka</code> repo 分開，互不影響）</li>
+          <li>repo 頁面 →「Settings」→「Pages」：Source 選「Deploy from a branch」，Branch 選 <code class="inline">main</code>，資料夾選「<code class="inline">/docs</code>」→ Save</li>
+          <li>等 1～2 分鐘，開啟 <code class="inline">https://&lt;你的帳號&gt;.github.io/jioka2/</code></li>
+        </ol>
+        <div class="field-note warn">實際網域要跟步驟 B 的「已授權網域」一致，不然登入會失敗。</div>
+      </div>
+    </section>
+
+    <section id="verify">
+      <h2><span class="num">✓</span>驗收測試清單</h2>
+      <div class="checklist">
+        <div class="item"><span class="box"></span>開啟前端網址 → 點「發起揪咖」→ 出現 Google 登入按鈕 → 登入成功</div>
+        <div class="item"><span class="box"></span>建立活動：填名稱、選幾個日期＋時段、加一個地點 → 送出 → 看到分享連結 Modal</div>
+        <div class="item"><span class="box"></span>Firebase Console → Firestore Database → 資料：看到 <code class="inline">events</code> 底下多了一筆，展開子集合有 <code class="inline">options</code> / <code class="inline">participants</code></div>
+        <div class="item"><span class="box"></span>用<strong>無痕視窗</strong>開活動連結，登入<strong>另一個 Google 帳號</strong> → 設暱稱 → 勾日期/地點 → 留言</div>
+        <div class="item"><span class="box"></span>回原視窗：<strong>幾乎即時</strong>看到統計更新（不用等輪詢間隔，這是 Firestore 即時同步）</div>
+        <div class="item"><span class="box"></span>進「管理後台」：看到明細表、可刪留言、設截止時間、匯出 CSV</div>
+        <div class="item"><span class="box"></span>「標記最終方案」→ 跳到結果頁 → 看到結果卡</div>
+      </div>
+    </section>
+
+    <section id="roles">
+      <h2><span class="num">·</span>三種身分怎麼用</h2>
+      <p class="lead">跟一代完全一樣的玩法：誰先對某場活動建立/投票，誰就是主揪。</p>
+      <div class="roles">
+        <div class="role-card owner">
+          <div class="role-title">👑 主揪（發起人）</div>
+          <ol>
+            <li>首頁「🎉 發起揪咖」→ 登入 → 填名稱、類型、說明、截止時間</li>
+            <li>月曆點日期 → 勾時段（可複選/自訂）；填地點名稱 + Map 連結，可加多個</li>
+            <li>送出後把連結丟 LINE 群組（Modal 內建 LINE 分享）</li>
+            <li>管理後台可以：看明細、刪留言/選項、延長或提前結束投票、指定次管理者、標記最終方案、下載 CSV</li>
+          </ol>
+        </div>
+        <div class="role-card">
+          <div class="role-title">🙋 參與者</div>
+          <ol>
+            <li>打開連結 → Google 登入 → 設定本場暱稱（同場不能撞名）</li>
+            <li>點候選日期勾時段；點還不是候選的日期可「提議新日期」</li>
+            <li>地點點「我可以」（可複選），也能「新增候選地點」；截止前隨時可改</li>
+          </ol>
+        </div>
+        <div class="role-card coadmin">
+          <div class="role-title">🤝 次管理者</div>
+          <ul>
+            <li>由主揪在後台輸入 Gmail 指定；對方就算還沒登入過也能先加，等他第一次用該帳號打開活動時自動生效</li>
+            <li>能新增候選日期/地點、刪除留言、查看投票明細；不能改主揪已建立的選項與活動設定</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="data-model">
+      <h2><span class="num">·</span>資料放在哪些 Firestore 集合</h2>
+      <p class="lead">每場活動是 <code class="inline">events/{eventId}</code> 一份文件，底下掛子集合。Email 一律只放在 <code class="inline">private/roles</code> 與 <code class="inline">participantsPrivate</code> 這兩個私有子集合，一般訪客與其他參與者看不到。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>路徑</th><th>存什麼</th><th>備註</th></tr></thead>
+          <tbody>
+            <tr><td>events/{id}</td><td>活動主檔（公開欄位）：標題、類型、截止時間、最終方案、ownerUid</td><td><span class="pill open">open</span> / closed / confirmed / deleted（軟刪除）</td></tr>
+            <tr><td>events/{id}/private/roles</td><td>主揪/次管理者 Email 名單</td><td>只有主揪/次管理者讀得到</td></tr>
+            <tr><td>events/{id}/options/{oid}</td><td>候選日期＋時段 或 候選地點＋Map 連結</td><td>isDeleted 軟刪除</td></tr>
+            <tr><td>events/{id}/votes/{uid}</td><td>某人在這場活動投的所有選項</td><td>doc id = uid，改票直接覆寫整份，不用鎖</td></tr>
+            <tr><td>events/{id}/comments/{cid}</td><td>留言，可指向特定選項</td><td>僅 <span class="pill owner">管理者</span> 可刪（軟刪除）</td></tr>
+            <tr><td>events/{id}/participants/{uid}</td><td>暱稱、加入/最後訪問時間</td><td>公開，暱稱同場唯一</td></tr>
+            <tr><td>events/{id}/participantsPrivate/{uid}</td><td>Email</td><td>只有本人與管理者讀得到</td></tr>
+            <tr><td>events/{id}/nicknames/{nickname}</td><td>暱稱佔用登記</td><td>doc id 本身天生唯一，達成搶佔式唯一性</td></tr>
+            <tr><td>userJoinedEvents/{uid}/items/{eid}</td><td>「我參加過的活動」索引</td><td>只有本人讀得到</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="kv-grid">
+        <div class="kv"><div class="k">併發保護</div>投票用 doc id = uid 直接覆寫整份，天然不需要全域鎖，不會像一代那樣人多時卡住</div>
+        <div class="kv"><div class="k">即時性</div>前端用 Firestore <code class="inline">onSnapshot</code> 訂閱，資料一變就推送，不用輪詢等待</div>
+        <div class="kv"><div class="k">免費額度</div>Spark 方案每天 5 萬次讀取 / 2 萬次寫入，一般朋友揪團規模用不完</div>
+      </div>
+    </section>
+
+    <section id="faq">
+      <h2><span class="num">?</span>常見問題</h2>
+      <details>
+        <summary>登入按鈕沒出現，或登入失敗？</summary>
+        <p>檢查 Firebase Authentication →「Settings」→「已授權網域」是否包含你實際開啟的網域。<code class="inline">config.js</code> 裡的 <code class="inline">GOOGLE_CLIENT_ID</code> 要跟 Authentication → Sign-in method → Google 那組一致。</p>
+      </details>
+      <details>
+        <summary>跟舊版 jioka（試算表版）資料會混在一起嗎？</summary>
+        <p>不會。這是完全獨立的 Firebase 專案、獨立的 GitHub repo，兩邊資料庫互不相通，舊版連結一樣可以繼續用。</p>
+      </details>
+      <details>
+        <summary>改了 firestore.rules 之後前端行為沒變？</summary>
+        <p>規則要重新「發布」（主控台的規則分頁）或重新 <code class="inline">firebase deploy --only firestore:rules</code> 才會生效，不是存檔就自動套用。</p>
+      </details>
+      <details>
+        <summary>資料會不會遺失？誰看得到？</summary>
+        <p>所有資料存在你的 Firebase 專案 Firestore 裡，權限完全由 <code class="inline">firestore.rules</code> 把關（沒有後端伺服器）。刪除活動/選項/留言都是軟刪除，要復原可以在 Firebase Console 手動改欄位。</p>
+      </details>
+    </section>
+
+    <section id="privacy">
+      <h2><span class="num">🔒</span>隱私與安全</h2>
+      <div class="callout">
+        <ul style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px;font-size:14.5px">
+          <li>登入採 Firebase Authentication + Google 提供者，只取 Email 與顯示名稱，不存密碼；Google ID token 由 Firebase 後端驗證，前端不用自己驗</li>
+          <li>公開可讀的活動資料（給任何持有連結的人看）完全不含任何人的 Email，只有暱稱</li>
+          <li>Email 只存在 <code class="inline">private/roles</code>（管理者名單）與 <code class="inline">participantsPrivate</code>（每人的 Email），只有主揪/次管理者、以及本人自己讀得到</li>
+          <li>沒有後端伺服器，所有資料存取規則寫在 <code class="inline">firestore.rules</code>，是整個系統唯一的安全邊界，改動請小心測試</li>
+        </ul>
+      </div>
+    </section>
+
+    <footer class="page-foot">jioka2（Firebase 版）・舊版 jioka（Google 試算表版）獨立不受影響 ・ 揪得開心 🎉</footer>
+  </main>
+</div>
+
+<script>
+  (function () {
+    var links = Array.prototype.slice.call(document.querySelectorAll('nav.toc a[data-nav]'));
+    var targets = links.map(function (a) { return document.querySelector(a.getAttribute('href')); }).filter(Boolean);
+    function onScroll() {
+      var y = window.scrollY + 120;
+      var current = targets[0];
+      targets.forEach(function (t) { if (t.offsetTop <= y) current = t; });
+      links.forEach(function (a) {
+        a.classList.toggle('current', a.getAttribute('href') === '#' + current.id);
+      });
+    }
+    document.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+  })();
+</script>
+</body>
+</html>
