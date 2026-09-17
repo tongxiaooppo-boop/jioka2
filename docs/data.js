@@ -6,7 +6,7 @@
 import { db } from './firebase-init.js';
 import {
   doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, query, where,
-  onSnapshot, writeBatch, serverTimestamp, Timestamp,
+  onSnapshot, writeBatch, serverTimestamp, Timestamp, arrayUnion,
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 
 function fail(code, message) { const e = new Error(message); e.code = code; throw e; }
@@ -23,13 +23,20 @@ const EVENT_TYPES = ['一日遊', '聚餐', '聚會'];
 function tsToIso(ts) { return ts ? ts.toDate().toISOString() : null; }
 function dateInputToTs(v) { return v ? Timestamp.fromDate(new Date(v)) : null; }
 function nickKey(nickname) { return String(nickname || '').trim().toLowerCase(); }
-/** 建立活動時自動幫使用者取的預設暱稱：Google 顯示名稱可能為空、也可能整個是 Email（超過 20 字上限），
- * 一律不要把完整 Email 存進公開可讀的 participants，退而求其次用 Email 帳號部分，最後保底用 uid 開頭。 */
+/** 暱稱同時是 Firestore doc id（events/{id}/nicknames/{暱稱}），不能含 '/'，也不能整份是 '.' 或 '..' */
+function isValidNicknameText(n) {
+  if (!n || n.length > 20 || n.indexOf('/') >= 0) return false;
+  const key = nickKey(n);
+  return key !== '.' && key !== '..';
+}
+/** 建立活動時自動幫使用者取的預設暱稱：Google 顯示名稱可能為空、也可能整個是 Email（超過 20 字上限）、
+ * 也可能含 '/' 這種不能當 doc id 的字元，一律不要把完整 Email 存進公開可讀的 participants，
+ * 依序退而求其次用 Email 帳號部分，最後保底用 uid 開頭（保底值本身一定合法，不會再失敗）。 */
 function safeNickname(name, email, uid) {
   const n = str(name).trim();
-  if (n && n.indexOf('@') < 0 && n.length <= 20) return n;
-  const local = str(email).split('@')[0].trim();
-  if (local) return local.substring(0, 20);
+  if (n && n.indexOf('@') < 0 && isValidNicknameText(n)) return n;
+  const local = str(email).split('@')[0].trim().substring(0, 20);
+  if (local && isValidNicknameText(local)) return local;
   return '揪咖' + str(uid).substring(0, 6);
 }
 function validDateStr(s) { return /^\d{4}-\d{2}-\d{2}$/.test(str(s)); }
@@ -60,26 +67,44 @@ export async function getEventPayload(eventId, currentUser) {
 
 // 這個 session 裡已經確認過「不是次管理者」的 (eventId, uid) 組合，避免即時同步每次觸發都重打一次注定失敗的讀取
 const _notCoAdminCache = new Set();
+// 正在登記中的 (eventId, uid)：subscribeEvent 的 debounce 期間可能疊加好幾次呼叫，
+// 同一個 uid 的 updateDoc 若疊著送出，規則的 !(uid in coAdminUids) 檢查會讓後面那次被拒，
+// 且拒絕原因很容易被誤判成「不是次管理者」，用旗標擋掉重疊呼叫。
+const _registering = new Set();
 /** 若目前使用者的 Email 在 private/roles 的邀請名單裡、但公開索引 coAdminUids 還沒有他的 uid，幫他補登記一次 */
 async function selfRegisterCoAdminIfNeeded(eventId, ev, currentUser) {
   if (ev.ownerUid === currentUser.uid) return;
   if ((ev.coAdminUids || []).indexOf(currentUser.uid) >= 0) return;
   const cacheKey = eventId + ':' + currentUser.uid;
-  if (_notCoAdminCache.has(cacheKey)) return;
+  if (_notCoAdminCache.has(cacheKey) || _registering.has(cacheKey)) return;
+
+  let isCoAdmin = false;
   try {
     const rolesSnap = await getDoc(doc(db, 'events', eventId, 'private', 'roles'));
-    if (!rolesSnap.exists()) { _notCoAdminCache.add(cacheKey); return; }
-    const emails = rolesSnap.data().coAdminEmails || [];
-    if (emails.indexOf(currentUser.email.toLowerCase()) < 0) { _notCoAdminCache.add(cacheKey); return; }
-    await updateDoc(doc(db, 'events', eventId), { coAdminUids: [...(ev.coAdminUids || []), currentUser.uid] });
+    isCoAdmin = rolesSnap.exists() && (rolesSnap.data().coAdminEmails || []).indexOf(currentUser.email.toLowerCase()) >= 0;
+  } catch (e) {
+    // 讀 private/roles 被拒 = 確定不是管理者，記下來這個 session 不用再試
+    _notCoAdminCache.add(cacheKey);
+    return;
+  }
+  if (!isCoAdmin) { _notCoAdminCache.add(cacheKey); return; }
+
+  _registering.add(cacheKey);
+  try {
+    // 用 arrayUnion 而不是「讀本地快取的陣列再 concat」，避免快取過期（例如另一位次管理者剛登記、
+    // 或主揪剛移除過人）時，規則要求的「新陣列 == 舊陣列.concat([uid])」逐元素比對失敗
+    await updateDoc(doc(db, 'events', eventId), { coAdminUids: arrayUnion(currentUser.uid) });
+    // 寫入成功後才把本地快取也補上，讓緊接著的這次 buildPayload 立刻顯示正確角色，不用等下一次 snapshot 回來
     ev.coAdminUids = [...(ev.coAdminUids || []), currentUser.uid];
     // 順手把 uid → Email 的私有對照寫進 participantsPrivate（就算他還沒設暱稱），
-    // 這樣主揪之後移除這個次管理者時，manageCoAdmins 才找得到他的 uid 一併從 coAdminUids 清掉（見 M-F）
+    // 這樣主揪之後移除這個次管理者時，manageCoAdmins 才找得到他的 uid 一併從 coAdminUids 清掉
     try { await setDoc(doc(db, 'events', eventId, 'participantsPrivate', currentUser.uid), { email: currentUser.email.toLowerCase() }); }
     catch (ignore) { /* 不影響主流程 */ }
   } catch (e) {
-    // 讀 private/roles 被拒（多半是真的不是管理者），記下來這個 session 不用再試
-    if (e && e.code === 'permission-denied') _notCoAdminCache.add(cacheKey);
+    // updateDoc 失敗（例如規則的 concat 比對沒對上）不代表「不是次管理者」，不要記進 _notCoAdminCache，
+    // 讓下一次同步觸發時可以再試一次
+  } finally {
+    _registering.delete(cacheKey);
   }
 }
 
@@ -115,7 +140,9 @@ function buildPayload(eventId, ev, optionsSnap, votesSnap, participantsSnap, com
     const item = {
       optionId: d.id, optionType: o.optionType,
       date: str(o.date), timeSlot: str(o.timeSlot),
-      placeName: str(o.placeName), mapLink: str(o.mapLink),
+      // 規則從某個時間點後才開始擋 javascript: 等 scheme，這裡對輸出再洗一次，
+      // 讓部署前就已經寫進資料庫的髒資料也不會被當成可點連結渲染出去（見複審 H-N1）
+      placeName: str(o.placeName), mapLink: safeHttpUrl(o.mapLink),
       createdBy: nickOf[o.createdByUid] || '早期成員', createdByUid: o.createdByUid,
     };
     if (o.optionType === 'date') dateOpts.push(item); else placeOpts.push(item);
@@ -178,7 +205,7 @@ function buildPayload(eventId, ev, optionsSnap, votesSnap, participantsSnap, com
       confirmedDateId: confD || null, confirmedPlaceId: confP || null,
       confirmedDateLabel: confD && optById[confD] ? optionLabel(optById[confD]) : '',
       confirmedPlaceName: confP && optById[confP] ? str(optById[confP].placeName) : '',
-      confirmedPlaceLink: confP && optById[confP] ? str(optById[confP].mapLink) : '',
+      confirmedPlaceLink: confP && optById[confP] ? safeHttpUrl(optById[confP].mapLink) : '',
       adminNickname: nickOf[ev.ownerUid] || '主揪',
       participantCount: totalP, createdAt: tsToIso(ev.createdAt),
       ownerUid: ev.ownerUid, coAdminUids: ev.coAdminUids || [],
@@ -287,9 +314,8 @@ export async function checkNickname(eventId, myUid, nickname) {
 export async function setNickname(eventId, user, nickname) {
   const nickname2 = str(nickname).trim();
   if (!nickname2 || nickname2.length > 20) fail('BAD_REQUEST', '暱稱必填（20 字內）');
-  if (nickname2.indexOf('/') >= 0) fail('BAD_REQUEST', '暱稱不能包含「/」');
+  if (!isValidNicknameText(nickname2)) fail('BAD_REQUEST', '暱稱不能包含「/」，也不能是「.」或「..」');
   const newKey = nickKey(nickname2);
-  if (newKey === '.' || newKey === '..') fail('BAD_REQUEST', '請換一個暱稱');
   const pRef = doc(db, 'events', eventId, 'participants', user.uid);
   const newNickRef = doc(db, 'events', eventId, 'nicknames', newKey);
 
@@ -319,8 +345,11 @@ export async function setNickname(eventId, user, nickname) {
     try { await deleteDoc(doc(db, 'events', eventId, 'nicknames', oldKey)); }
     catch (e) { /* 舊 reservation 沒刪成也不影響已經改好的暱稱，忽略即可 */ }
   }
-  await setDoc(doc(db, 'events', eventId, 'participantsPrivate', user.uid), { email: user.email.toLowerCase() });
-  await setDoc(doc(db, 'userJoinedEvents', user.uid, 'items', eventId), { joinedAt: serverTimestamp() }, { merge: true });
+  // 暱稱本身（participants 那份文件）已經寫成功了，以下兩步失敗不該讓使用者以為暱稱沒存到
+  try { await setDoc(doc(db, 'events', eventId, 'participantsPrivate', user.uid), { email: user.email.toLowerCase() }); }
+  catch (e) { /* 忽略 */ }
+  try { await setDoc(doc(db, 'userJoinedEvents', user.uid, 'items', eventId), { joinedAt: serverTimestamp() }, { merge: true }); }
+  catch (e) { /* 忽略 */ }
   return { nickname: nickname2 };
 }
 
@@ -375,7 +404,11 @@ export async function addComment(eventId, user, optionId, content) {
   await setDoc(doc(collection(db, 'events', eventId, 'comments')), {
     uid: user.uid, optionId: str(optionId), content: content2, createdAt: serverTimestamp(), isDeleted: false,
   });
-  await updateDoc(doc(db, 'events', eventId, 'participants', user.uid), { lastVisitAt: serverTimestamp() });
+  // lastVisitAt 只是顯示用的次要欄位，且這次 updateDoc 會重新跑一次 participants 的 nickname/reservation 綁定檢查
+  // （因為 updateDoc 送出的 request.resource.data 是合併後的完整文件）；萬一舊資料的 reservation 對不上，
+  // 不該讓留言本身（已經寫入成功）被回報成失敗，所以這步失敗就忽略。
+  try { await updateDoc(doc(db, 'events', eventId, 'participants', user.uid), { lastVisitAt: serverTimestamp() }); }
+  catch (e) { /* 忽略，不影響留言已送出的事實 */ }
   return { added: true };
 }
 export async function deleteComment(eventId, commentId) {
@@ -548,6 +581,7 @@ export function subscribeEvent(eventId, currentUser, onChange, onError) {
   let timer = null;
   const rebuild = () => {
     if (!cache.ev || !cache.options || !cache.votes || !cache.participants || !cache.comments) return;
+    if (cache.ev.status === 'deleted') { if (onError) onError(new Error('EVENT_NOT_FOUND')); return; }
     clearTimeout(timer);
     timer = setTimeout(async () => {
       try {
