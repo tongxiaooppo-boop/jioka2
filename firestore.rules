@@ -13,7 +13,14 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{db}/documents {
 
-    function signedIn() { return request.auth != null; }
+    // 只信任 Google 帳號登入、且 Email 已通過 Google 驗證的 token。
+    // 若專案主控台之後不小心多開了 Email/Password 等登入方式，攻擊者能自選 email claim 冒充任何人，
+    // 這裡直接擋掉，不讓角色判斷鏈的安全性繫於一個 Console 裡的勾選狀態。
+    function signedIn() {
+      return request.auth != null &&
+        request.auth.token.firebase.sign_in_provider == 'google.com' &&
+        request.auth.token.email_verified == true;
+    }
     function myEmail() { return request.auth.token.email.lower(); }
 
     function rolesDoc(eventId) {
@@ -46,8 +53,9 @@ service cloud.firestore {
       // 不含任何 Email。任何人（含匿名）可讀，比照原設計允許免登入查看投票頁。
       allow get: if true;
       // 「我的揪咖紀錄」用 .where('ownerUid','==',uid) 或 .where('coAdminUids','array-contains',uid) 查詢，
-      // 這兩個欄位是 uid 不是 email，不算隱私外洩。Firestore 會用查詢的等式條件對齊下面這條規則，
-      // 只放行「查詢結果內每一份文件都必然符合規則」的查詢，不需要另外檢查 request.query。
+      // 這兩個欄位是 uid 不是 email，不算隱私外洩。Firestore 對 list/query 一樣是逐份候選文件套用這條規則，
+      // 只要結果集裡任何一份文件不滿足就整個查詢被拒——只要查詢本身有用同一個欄位做等式/array-contains 過濾，
+      // 結果集裡每份文件自然都會滿足，不需要另外檢查 request.query。
       allow list: if signedIn() &&
         (resource.data.ownerUid == request.auth.uid || request.auth.uid in resource.data.coAdminUids);
 
@@ -56,7 +64,13 @@ service cloud.firestore {
         request.resource.data.status == 'open' &&
         request.resource.data.title is string && request.resource.data.title.size() > 0 &&
         request.resource.data.title.size() <= 50 &&
-        request.resource.data.description.size() <= 500 &&
+        request.resource.data.description is string && request.resource.data.description.size() <= 500 &&
+        (request.resource.data.deadline == null || request.resource.data.deadline is timestamp) &&
+        request.resource.data.coAdminUids == [] &&
+        request.resource.data.confirmedDateId == '' && request.resource.data.confirmedPlaceId == '' &&
+        request.resource.data.keys().hasAll(
+          ['title','type','description','status','deadline','confirmedDateId','confirmedPlaceId',
+           'ownerUid','coAdminUids','createdAt']) &&
         request.resource.data.keys().hasOnly(
           ['title','type','description','status','deadline','confirmedDateId','confirmedPlaceId',
            'ownerUid','coAdminUids','createdAt']);
@@ -68,9 +82,17 @@ service cloud.firestore {
       allow update: if
         (isOwner(eventId) &&
           request.resource.data.ownerUid == resource.data.ownerUid &&
-          request.resource.data.createdAt == resource.data.createdAt) ||
+          request.resource.data.createdAt == resource.data.createdAt &&
+          request.resource.data.status in ['open','closed','confirmed','deleted'] &&
+          request.resource.data.title is string && request.resource.data.title.size() > 0 &&
+          request.resource.data.title.size() <= 50 &&
+          request.resource.data.description.size() <= 500 &&
+          request.resource.data.keys().hasOnly(
+            ['title','type','description','status','deadline','confirmedDateId','confirmedPlaceId',
+             'ownerUid','coAdminUids','createdAt'])) ||
         (isCoAdmin(eventId) &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['coAdminUids']) &&
+          !(request.auth.uid in resource.data.coAdminUids) &&
           request.resource.data.coAdminUids == resource.data.coAdminUids.concat([request.auth.uid]));
 
       allow delete: if false; // 一律軟刪（把 status 設為 deleted），不做硬刪除
@@ -94,6 +116,11 @@ service cloud.firestore {
           request.resource.data.createdByUid == request.auth.uid &&
           request.resource.data.isDeleted == false &&
           request.resource.data.optionType in ['date','place'] &&
+          request.resource.data.date is string && request.resource.data.date.size() <= 10 &&
+          request.resource.data.timeSlot is string && request.resource.data.timeSlot.size() <= 10 &&
+          request.resource.data.placeName is string && request.resource.data.placeName.size() <= 50 &&
+          request.resource.data.mapLink is string && request.resource.data.mapLink.size() <= 300 &&
+          (request.resource.data.mapLink == '' || request.resource.data.mapLink.matches('^https?://.*')) &&
           request.resource.data.keys().hasOnly(
             ['optionType','date','timeSlot','placeName','mapLink','createdByUid','createdAt','isDeleted']);
         // 軟刪除：只有管理者，且次管理者不能刪主揪建立的選項
@@ -121,6 +148,7 @@ service cloud.firestore {
           request.resource.data.uid == request.auth.uid &&
           request.resource.data.content is string && request.resource.data.content.size() > 0 &&
           request.resource.data.content.size() <= 500 &&
+          request.resource.data.optionId is string && request.resource.data.optionId.size() <= 40 &&
           request.resource.data.isDeleted == false &&
           request.resource.data.keys().hasOnly(['uid','optionId','content','createdAt','isDeleted']);
         // 軟刪除：僅管理者（留言者本人不可刪，避免滅證，比照原設計）
@@ -133,24 +161,40 @@ service cloud.firestore {
       // ---- 參與者：公開部分（暱稱），不含 Email ----
       match /participants/{uid} {
         allow read: if true;
+        // 暱稱必須對應一份「屬於我」的 nicknames reservation 文件才能寫入，
+        // 否則任何人都能直接覆寫成跟別人一樣的暱稱（見審查 H6：會冒名，且投票統計是用暱稱去重會被扭曲）。
+        // reservation 一定要先獨立寫入、commit 成功後才能寫這裡（data.js 的 setNickname/createEvent 都遵守這個順序），
+        // 因為這裡用 get() 檢查，看不到同一批次寫入裡還沒 commit 的 reservation。
         allow write: if signedIn() && request.auth.uid == uid &&
           request.resource.data.nickname is string &&
           request.resource.data.nickname.size() > 0 && request.resource.data.nickname.size() <= 20 &&
-          request.resource.data.keys().hasOnly(['nickname','joinedAt','lastVisitAt']);
+          request.resource.data.keys().hasOnly(['nickname','joinedAt','lastVisitAt']) &&
+          get(/databases/$(db)/documents/events/$(eventId)/nicknames/$(request.resource.data.nickname.lower())).data.uid == request.auth.uid;
       }
 
       // ---- 參與者：私有部分（Email），只有本人與管理者看得到 ----
       match /participantsPrivate/{uid} {
         allow get: if signedIn() && (request.auth.uid == uid || isAdmin(eventId));
         allow list: if isAdmin(eventId);
-        allow create: if signedIn() && request.auth.uid == uid && request.resource.data.email == myEmail();
-        allow update, delete: if false;
+        // create 與 update 都放行：每次設定暱稱都會順手覆寫這份文件（見 data.js setNickname），
+        // 只要求寫入的 Email 一定等於自己目前登入帳號的 Email，也順便處理使用者換過 Google 帳號 Email 的情況。
+        allow create, update: if signedIn() && request.auth.uid == uid &&
+          request.resource.data.email == myEmail() &&
+          request.resource.data.keys().hasOnly(['email']);
+        allow delete: if false;
       }
 
       // ---- 暱稱唯一性保留文件：doc id 本身天生唯一，天然達成搶佔式唯一性 ----
       match /nicknames/{nickKey} {
         allow get: if true;
-        allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+        // 這裡刻意不要求 isParticipant(eventId)：因為 participants 的寫入規則（見上）反過來要求
+        // 對應的 nicknames reservation 已存在，兩者互相要求會變成先有雞先有蛋，
+        // 所以第一次設定暱稱時一定是先寫 nicknames、才寫 participants。
+        // 殘餘風險：任何登入者可以搶佔大量暱稱字串（reservation-squatting），
+        // 目前用 nickKey 長度上限稍微降低影響，尚未完全解決，量體變成問題時再補救（例如改記錄 reservedAt 限流）。
+        allow create: if signedIn() && nickKey.size() <= 20 &&
+          request.resource.data.uid == request.auth.uid &&
+          request.resource.data.keys().hasOnly(['uid']);
         allow delete: if signedIn() && resource.data.uid == request.auth.uid;
         allow update: if false;
       }

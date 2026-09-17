@@ -5,8 +5,8 @@
  */
 import { db } from './firebase-init.js';
 import {
-  doc, getDoc, getDocs, setDoc, updateDoc, collection, query, where,
-  onSnapshot, runTransaction, writeBatch, serverTimestamp, Timestamp,
+  doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, query, where,
+  onSnapshot, writeBatch, serverTimestamp, Timestamp,
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 
 function fail(code, message) { const e = new Error(message); e.code = code; throw e; }
@@ -23,6 +23,15 @@ const EVENT_TYPES = ['一日遊', '聚餐', '聚會'];
 function tsToIso(ts) { return ts ? ts.toDate().toISOString() : null; }
 function dateInputToTs(v) { return v ? Timestamp.fromDate(new Date(v)) : null; }
 function nickKey(nickname) { return String(nickname || '').trim().toLowerCase(); }
+/** 建立活動時自動幫使用者取的預設暱稱：Google 顯示名稱可能為空、也可能整個是 Email（超過 20 字上限），
+ * 一律不要把完整 Email 存進公開可讀的 participants，退而求其次用 Email 帳號部分，最後保底用 uid 開頭。 */
+function safeNickname(name, email, uid) {
+  const n = str(name).trim();
+  if (n && n.indexOf('@') < 0 && n.length <= 20) return n;
+  const local = str(email).split('@')[0].trim();
+  if (local) return local.substring(0, 20);
+  return '揪咖' + str(uid).substring(0, 6);
+}
 function validDateStr(s) { return /^\d{4}-\d{2}-\d{2}$/.test(str(s)); }
 /** 只允許 http/https 開頭的連結，擋掉 javascript: 等會在前端被當連結渲染執行的 scheme */
 function safeHttpUrl(v) {
@@ -49,18 +58,29 @@ export async function getEventPayload(eventId, currentUser) {
   return buildPayload(eventId, ev, optionsSnap, votesSnap, participantsSnap, commentsSnap, currentUser);
 }
 
+// 這個 session 裡已經確認過「不是次管理者」的 (eventId, uid) 組合，避免即時同步每次觸發都重打一次注定失敗的讀取
+const _notCoAdminCache = new Set();
 /** 若目前使用者的 Email 在 private/roles 的邀請名單裡、但公開索引 coAdminUids 還沒有他的 uid，幫他補登記一次 */
 async function selfRegisterCoAdminIfNeeded(eventId, ev, currentUser) {
   if (ev.ownerUid === currentUser.uid) return;
   if ((ev.coAdminUids || []).indexOf(currentUser.uid) >= 0) return;
+  const cacheKey = eventId + ':' + currentUser.uid;
+  if (_notCoAdminCache.has(cacheKey)) return;
   try {
     const rolesSnap = await getDoc(doc(db, 'events', eventId, 'private', 'roles'));
-    if (!rolesSnap.exists()) return;
+    if (!rolesSnap.exists()) { _notCoAdminCache.add(cacheKey); return; }
     const emails = rolesSnap.data().coAdminEmails || [];
-    if (emails.indexOf(currentUser.email.toLowerCase()) < 0) return;
+    if (emails.indexOf(currentUser.email.toLowerCase()) < 0) { _notCoAdminCache.add(cacheKey); return; }
     await updateDoc(doc(db, 'events', eventId), { coAdminUids: [...(ev.coAdminUids || []), currentUser.uid] });
     ev.coAdminUids = [...(ev.coAdminUids || []), currentUser.uid];
-  } catch (e) { /* 不是次管理者，讀不到 roles，忽略即可 */ }
+    // 順手把 uid → Email 的私有對照寫進 participantsPrivate（就算他還沒設暱稱），
+    // 這樣主揪之後移除這個次管理者時，manageCoAdmins 才找得到他的 uid 一併從 coAdminUids 清掉（見 M-F）
+    try { await setDoc(doc(db, 'events', eventId, 'participantsPrivate', currentUser.uid), { email: currentUser.email.toLowerCase() }); }
+    catch (ignore) { /* 不影響主流程 */ }
+  } catch (e) {
+    // 讀 private/roles 被拒（多半是真的不是管理者），記下來這個 session 不用再試
+    if (e && e.code === 'permission-denied') _notCoAdminCache.add(cacheKey);
+  }
 }
 
 function roleOf(ev, currentUser) {
@@ -104,31 +124,32 @@ function buildPayload(eventId, ev, optionsSnap, votesSnap, participantsSnap, com
 
   const votesByUid = {};
   votesSnap.docs.forEach((d) => { votesByUid[d.id] = d.data().optionIds || []; });
-  const votersByOpt = {};
+  // 用 uid 去重（不是暱稱字串），避免暱稱萬一重複時票數被錯誤合併
+  const voterUidsByOpt = {};
   Object.keys(votesByUid).forEach((uid) => {
-    const nick = nickOf[uid] || '';
     votesByUid[uid].forEach((oid) => {
       if (!optById[oid]) return;
-      if (!votersByOpt[oid]) votersByOpt[oid] = [];
-      if (votersByOpt[oid].indexOf(nick) < 0) votersByOpt[oid].push(nick);
+      if (!voterUidsByOpt[oid]) voterUidsByOpt[oid] = [];
+      if (voterUidsByOpt[oid].indexOf(uid) < 0) voterUidsByOpt[oid].push(uid);
     });
   });
+  function namesOf(uids) { return uids.map((u) => nickOf[u] || '早期成員'); }
   const dateAgg = {};
   dateOpts.forEach((o) => {
-    if (!dateAgg[o.date]) dateAgg[o.date] = { date: o.date, voterSet: {}, slots: [] };
-    const voters = votersByOpt[o.optionId] || [];
-    voters.forEach((n) => { dateAgg[o.date].voterSet[n] = true; });
-    dateAgg[o.date].slots.push({ optionId: o.optionId, timeSlot: o.timeSlot, count: voters.length, voters });
+    if (!dateAgg[o.date]) dateAgg[o.date] = { date: o.date, voterUidSet: {}, slots: [] };
+    const uids = voterUidsByOpt[o.optionId] || [];
+    uids.forEach((u) => { dateAgg[o.date].voterUidSet[u] = true; });
+    dateAgg[o.date].slots.push({ optionId: o.optionId, timeSlot: o.timeSlot, count: uids.length, voters: namesOf(uids) });
   });
   const totalP = participants.length;
   const dateStats = Object.keys(dateAgg).sort().map((d) => {
     const g = dateAgg[d];
-    const count = Object.keys(g.voterSet).length;
+    const count = Object.keys(g.voterUidSet).length;
     return { date: d, voterCount: count, allOk: totalP > 0 && count === totalP, slots: g.slots };
   });
   const placeStats = placeOpts.map((o) => {
-    const voters = votersByOpt[o.optionId] || [];
-    return { optionId: o.optionId, count: voters.length, voters };
+    const uids = voterUidsByOpt[o.optionId] || [];
+    return { optionId: o.optionId, count: uids.length, voters: namesOf(uids) };
   });
 
   const myUid = currentUser ? currentUser.uid : null;
@@ -195,37 +216,45 @@ export async function createEvent(user, params) {
     deadline: dateInputToTs(params.deadline), confirmedDateId: '', confirmedPlaceId: '',
     ownerUid: user.uid, coAdminUids: [], createdAt: serverTimestamp(),
   });
-  await setDoc(doc(db, 'events', eventId, 'private', 'roles'), {
-    ownerEmail: user.email.toLowerCase(), coAdminEmails: [],
-  });
-  const nickname = str(user.name).substring(0, 20) || user.email;
-  await setDoc(doc(db, 'events', eventId, 'participants', user.uid), {
-    nickname, joinedAt: serverTimestamp(), lastVisitAt: serverTimestamp(),
-  });
-  await setDoc(doc(db, 'events', eventId, 'participantsPrivate', user.uid), { email: user.email.toLowerCase() });
-  await setDoc(doc(db, 'events', eventId, 'nicknames', nickKey(nickname)), { uid: user.uid });
-  await setDoc(doc(db, 'userJoinedEvents', user.uid, 'items', eventId), { joinedAt: serverTimestamp() });
+  try {
+    await setDoc(doc(db, 'events', eventId, 'private', 'roles'), {
+      ownerEmail: user.email.toLowerCase(), coAdminEmails: [],
+    });
+    const nickname = safeNickname(user.name, user.email, user.uid);
+    // nicknames reservation 一定要先 commit，participants 的安全規則才會放行（見 firestore.rules 的說明）
+    await setDoc(doc(db, 'events', eventId, 'nicknames', nickKey(nickname)), { uid: user.uid });
+    await setDoc(doc(db, 'events', eventId, 'participants', user.uid), {
+      nickname, joinedAt: serverTimestamp(), lastVisitAt: serverTimestamp(),
+    });
+    await setDoc(doc(db, 'events', eventId, 'participantsPrivate', user.uid), { email: user.email.toLowerCase() });
+    await setDoc(doc(db, 'userJoinedEvents', user.uid, 'items', eventId), { joinedAt: serverTimestamp() });
 
-  const batch = writeBatch(db);
-  dates.forEach((d) => {
-    if (!validDateStr(d.date)) return;
-    const ref = doc(collection(db, 'events', eventId, 'options'));
-    batch.set(ref, {
-      optionType: 'date', date: str(d.date), timeSlot: str(d.timeSlot).trim().substring(0, 10) || '全天',
-      placeName: '', mapLink: '', createdByUid: user.uid, createdAt: serverTimestamp(), isDeleted: false,
+    const batch = writeBatch(db);
+    dates.forEach((d) => {
+      if (!validDateStr(d.date)) return;
+      const ref = doc(collection(db, 'events', eventId, 'options'));
+      batch.set(ref, {
+        optionType: 'date', date: str(d.date), timeSlot: str(d.timeSlot).trim().substring(0, 10) || '全天',
+        placeName: '', mapLink: '', createdByUid: user.uid, createdAt: serverTimestamp(), isDeleted: false,
+      });
     });
-  });
-  places.forEach((p) => {
-    const name = str(p.placeName).trim();
-    if (!name) return;
-    const ref = doc(collection(db, 'events', eventId, 'options'));
-    batch.set(ref, {
-      optionType: 'place', date: '', timeSlot: '', placeName: name.substring(0, 50),
-      mapLink: safeHttpUrl(p.mapLink).substring(0, 300),
-      createdByUid: user.uid, createdAt: serverTimestamp(), isDeleted: false,
+    places.forEach((p) => {
+      const name = str(p.placeName).trim();
+      if (!name) return;
+      const ref = doc(collection(db, 'events', eventId, 'options'));
+      batch.set(ref, {
+        optionType: 'place', date: '', timeSlot: '', placeName: name.substring(0, 50),
+        mapLink: safeHttpUrl(p.mapLink).substring(0, 300),
+        createdByUid: user.uid, createdAt: serverTimestamp(), isDeleted: false,
+      });
     });
-  });
-  await batch.commit();
+    await batch.commit();
+  } catch (e) {
+    // 建立過程中任何一步失敗（例如罕見的暱稱衝突），把已經寫入的活動標記刪除，
+    // 避免留下一個沒有參與者、選項也寫不進去的孤兒活動。
+    try { await updateDoc(evRef, { status: 'deleted' }); } catch (ignore) { /* 忽略清理失敗 */ }
+    throw e;
+  }
   return { eventId };
 }
 
@@ -258,23 +287,38 @@ export async function checkNickname(eventId, myUid, nickname) {
 export async function setNickname(eventId, user, nickname) {
   const nickname2 = str(nickname).trim();
   if (!nickname2 || nickname2.length > 20) fail('BAD_REQUEST', '暱稱必填（20 字內）');
+  if (nickname2.indexOf('/') >= 0) fail('BAD_REQUEST', '暱稱不能包含「/」');
   const newKey = nickKey(nickname2);
+  if (newKey === '.' || newKey === '..') fail('BAD_REQUEST', '請換一個暱稱');
   const pRef = doc(db, 'events', eventId, 'participants', user.uid);
   const newNickRef = doc(db, 'events', eventId, 'nicknames', newKey);
 
-  await runTransaction(db, async (tx) => {
-    const [pSnap, newNickSnap] = await Promise.all([tx.get(pRef), tx.get(newNickRef)]);
-    if (newNickSnap.exists() && newNickSnap.data().uid !== user.uid) fail('NICKNAME_TAKEN', '這個暱稱有人用了，換一個吧');
-    const oldNickname = pSnap.exists() ? str(pSnap.data().nickname) : '';
-    const oldKey = nickKey(oldNickname);
-    if (oldKey && oldKey !== newKey) tx.delete(doc(db, 'events', eventId, 'nicknames', oldKey));
-    if (oldKey !== newKey) tx.set(newNickRef, { uid: user.uid });
-    tx.set(pRef, {
-      nickname: nickname2,
-      joinedAt: pSnap.exists() ? pSnap.data().joinedAt : serverTimestamp(),
-      lastVisitAt: serverTimestamp(),
-    });
+  // 刻意不用單一 transaction 打包「搶暱稱 + 寫 participants」：
+  // participants 的安全規則要求「這個暱稱的 reservation 文件已經存在且屬於我」，
+  // 而同一個 transaction 裡的 get()/exists() 看不到同一批次裡其他尚未 commit 的文件，
+  // 所以 reservation 必須先獨立寫入、確定 commit 成功後，才能寫 participants（跟 createEvent 同樣的因果鏈考量）。
+  const newNickSnap = await getDoc(newNickRef);
+  if (newNickSnap.exists()) {
+    if (newNickSnap.data().uid !== user.uid) fail('NICKNAME_TAKEN', '這個暱稱有人用了，換一個吧');
+  } else {
+    try { await setDoc(newNickRef, { uid: user.uid }); }
+    catch (e) { fail('NICKNAME_TAKEN', '這個暱稱有人用了，換一個吧'); }
+  }
+
+  const pSnap = await getDoc(pRef);
+  const oldNickname = pSnap.exists() ? str(pSnap.data().nickname) : '';
+  const oldKey = nickKey(oldNickname);
+
+  await setDoc(pRef, {
+    nickname: nickname2,
+    joinedAt: pSnap.exists() ? pSnap.data().joinedAt : serverTimestamp(),
+    lastVisitAt: serverTimestamp(),
   });
+
+  if (oldKey && oldKey !== newKey) {
+    try { await deleteDoc(doc(db, 'events', eventId, 'nicknames', oldKey)); }
+    catch (e) { /* 舊 reservation 沒刪成也不影響已經改好的暱稱，忽略即可 */ }
+  }
   await setDoc(doc(db, 'events', eventId, 'participantsPrivate', user.uid), { email: user.email.toLowerCase() });
   await setDoc(doc(db, 'userJoinedEvents', user.uid, 'items', eventId), { joinedAt: serverTimestamp() }, { merge: true });
   return { nickname: nickname2 };
@@ -478,7 +522,9 @@ export async function deleteEvent(eventId) {
 
 // ===================== 匯出 CSV =====================
 function csvCell(v) {
-  const s = str(v);
+  let s = str(v);
+  // 防 CSV 公式注入：Excel/Sheets 開啟時，開頭是 = + - @ 或 tab/CR 的欄位會被當公式執行
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
   return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 export async function exportCsv(eventId, eventTitle) {
@@ -492,22 +538,33 @@ export async function exportCsv(eventId, eventTitle) {
 }
 
 // ===================== 即時同步（取代原本輪詢） =====================
-/** 訂閱活動底下所有子集合的變動，debounce 後回呼重新組裝的完整 payload */
+/**
+ * 訂閱活動底下所有子集合的變動，直接用 onSnapshot 推送過來的資料重組 payload，
+ * 不再對任何一個集合另外呼叫 getDocs()——SDK 已經把完整內容送到手上了，
+ * 重新整包重抓只會讓一次投票變成所有在線訪客各自重讀全部文件（見審查 M-A）。
+ */
 export function subscribeEvent(eventId, currentUser, onChange, onError) {
+  const cache = { ev: null, options: null, votes: null, participants: null, comments: null };
   let timer = null;
-  const trigger = () => {
+  const rebuild = () => {
+    if (!cache.ev || !cache.options || !cache.votes || !cache.participants || !cache.comments) return;
     clearTimeout(timer);
     timer = setTimeout(async () => {
-      try { onChange(await getEventPayload(eventId, currentUser)); }
-      catch (e) { if (onError) onError(e); }
+      try {
+        if (currentUser) await selfRegisterCoAdminIfNeeded(eventId, cache.ev, currentUser);
+        onChange(buildPayload(eventId, cache.ev, cache.options, cache.votes, cache.participants, cache.comments, currentUser));
+      } catch (e) { if (onError) onError(e); }
     }, 150);
   };
   const unsubs = [
-    onSnapshot(doc(db, 'events', eventId), trigger, onError),
-    onSnapshot(collection(db, 'events', eventId, 'options'), trigger, onError),
-    onSnapshot(collection(db, 'events', eventId, 'votes'), trigger, onError),
-    onSnapshot(collection(db, 'events', eventId, 'participants'), trigger, onError),
-    onSnapshot(collection(db, 'events', eventId, 'comments'), trigger, onError),
+    onSnapshot(doc(db, 'events', eventId), (snap) => {
+      if (!snap.exists()) { if (onError) onError(new Error('EVENT_NOT_FOUND')); return; }
+      cache.ev = snap.data(); rebuild();
+    }, onError),
+    onSnapshot(collection(db, 'events', eventId, 'options'), (snap) => { cache.options = snap; rebuild(); }, onError),
+    onSnapshot(collection(db, 'events', eventId, 'votes'), (snap) => { cache.votes = snap; rebuild(); }, onError),
+    onSnapshot(collection(db, 'events', eventId, 'participants'), (snap) => { cache.participants = snap; rebuild(); }, onError),
+    onSnapshot(collection(db, 'events', eventId, 'comments'), (snap) => { cache.comments = snap; rebuild(); }, onError),
   ];
   return () => unsubs.forEach((u) => u());
 }

@@ -497,9 +497,12 @@ function renderNewPicked() {
   area.innerHTML = '<div class="chip-row">' + dates.map(function (d) {
     return NewForm.dateSlots[d].map(function (s) {
       return '<span class="chip on">' + fmtMD(d) + ' ' + esc(s) +
-        ' <b style="cursor:pointer" onclick="App.removeNewSlot(\'' + d + '\',\'' + esc(s) + '\')">✕</b></span>';
+        ' <b class="new-slot-del-btn" style="cursor:pointer" data-date="' + esc(d) + '" data-slot="' + esc(s) + '">✕</b></span>';
     }).join('');
   }).join('') + '</div>';
+  document.querySelectorAll('.new-slot-del-btn').forEach(function (btn) {
+    btn.onclick = function () { App.removeNewSlot(btn.dataset.date, btn.dataset.slot); };
+  });
 }
 
 async function submitNew() {
@@ -835,8 +838,13 @@ function proposeDate(dateStr) {
   });
 }
 
+function ensureHasNickname() {
+  if (State.eventData && State.eventData.me && !State.eventData.me.nickname) { nicknameModal(); return false; }
+  return true;
+}
 function addPlaceModal(fromAdmin) {
   if (!fromAdmin && !ensureCanVote()) return;
+  if (fromAdmin && !ensureHasNickname()) return;
   openModal(
     '<h3>新增候選地點</h3>' +
     '<div class="field"><label>地點名稱 *</label><input class="input" id="ap-name" maxlength="50" placeholder="例如：深坑老街"></div>' +
@@ -1082,14 +1090,14 @@ function renderAdminMain(data, detail) {
     const canDel = isOwner || o.createdByUid !== ev.ownerUid;
     return '<span class="chip" style="cursor:default">' + fmtMD(o.date) + ' ' + esc(o.timeSlot) +
       ' <small style="color:#777">by ' + esc(o.createdBy) + '</small>' +
-      (canDel ? ' <b style="cursor:pointer" onclick="App.adminDeleteOption(\'' + esc(o.optionId) + '\')">✕</b>' : '') + '</span>';
+      (canDel ? ' <b class="opt-del-btn" style="cursor:pointer" data-oid="' + esc(o.optionId) + '">✕</b>' : '') + '</span>';
   }).join('') + '</div>' : '<div class="empty-state">無</div>';
   html += '<p class="hint mb8">候選地點：</p>';
   html += data.options.places.length ? '<div class="chip-row mb8">' + data.options.places.map(function (o) {
     const canDel = isOwner || o.createdByUid !== ev.ownerUid;
     return '<span class="chip" style="cursor:default">' + esc(o.placeName) +
       ' <small style="color:#777">by ' + esc(o.createdBy) + '</small>' +
-      (canDel ? ' <b style="cursor:pointer" onclick="App.adminDeleteOption(\'' + esc(o.optionId) + '\')">✕</b>' : '') + '</span>';
+      (canDel ? ' <b class="opt-del-btn" style="cursor:pointer" data-oid="' + esc(o.optionId) + '">✕</b>' : '') + '</span>';
   }).join('') + '</div>' : '<div class="empty-state">無</div>';
   html += '<div class="gap8"><button class="btn btn-sm btn-yellow" onclick="App.adminAddDate()">＋ 新增日期</button>' +
     '<button class="btn btn-sm btn-mint" onclick="App.addPlaceModal(true)">＋ 新增地點</button></div>';
@@ -1099,6 +1107,9 @@ function renderAdminMain(data, detail) {
   $('#view').innerHTML = html;
   document.querySelectorAll('.bubble-del').forEach(function (btn) {
     btn.onclick = function () { App.deleteComment(btn.dataset.cid, true); };
+  });
+  document.querySelectorAll('.opt-del-btn').forEach(function (btn) {
+    btn.onclick = function () { App.adminDeleteOption(btn.dataset.oid); };
   });
   if (isOwner) renderAdminOwnerArea(data, detail);
   else $('#admin-owner-area').innerHTML = '<div class="card"><div class="hint">你是次管理者：可新增選項、刪除留言與查看明細；活動設定、截止時間、最終方案與次管理者由主管理者操作。</div></div>';
@@ -1125,7 +1136,7 @@ function renderAdminOwnerArea(data, detail) {
     '<div class="chip-row mt8">' +
     (detail.coAdminEmails.length ? detail.coAdminEmails.map(function (e) {
       return '<span class="chip" style="cursor:default">' + esc(e) +
-        ' <b style="cursor:pointer" onclick="App.removeCoAdmin(\'' + esc(e) + '\')">✕</b></span>';
+        ' <b class="coadmin-del-btn" style="cursor:pointer" data-email="' + esc(e) + '">✕</b></span>';
     }).join('') : '<span class="hint">尚未指定</span>') + '</div></div>';
 
   const dateOpts = data.options.dates.map(function (o) {
@@ -1148,6 +1159,9 @@ function renderAdminOwnerArea(data, detail) {
     '<button class="btn btn-danger-outline" onclick="App.deleteEventAction()">刪除整場活動</button>' +
     '<div class="hint mt8">刪除後所有人將無法查看；資料仍保留在資料庫（軟刪除）。</div></div>';
   $('#admin-owner-area').innerHTML = html;
+  document.querySelectorAll('.coadmin-del-btn').forEach(function (btn) {
+    btn.onclick = function () { App.removeCoAdmin(btn.dataset.email); };
+  });
   if (ev.confirmedDateId) $('#adm-conf-date').value = ev.confirmedDateId;
   if (ev.confirmedPlaceId) $('#adm-conf-place').value = ev.confirmedPlaceId;
 }
@@ -1160,6 +1174,7 @@ function adminDeleteOption(optionId) {
   });
 }
 function adminAddDate() {
+  if (!ensureHasNickname()) return;
   openModal(
     '<h3>新增候選日期</h3>' +
     '<div class="field"><label>日期</label><input class="input" id="aad-date" type="date"></div>' +
