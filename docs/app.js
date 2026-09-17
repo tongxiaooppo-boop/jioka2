@@ -12,7 +12,6 @@ const State = {
   eventData: null,     // 目前活動 payload
   eventId: null,
   unsubEvent: null,    // 即時同步（取代原本輪詢計時器）
-  calCursor: null,     // 月曆顯示月份 {y, m}（m 為 1-12）
   selectedDate: null,  // 月曆上被點開的日期
   myVotes: new Set(),  // 本地樂觀投票狀態
   voteTimer: null,     // 投票 debounce
@@ -280,36 +279,36 @@ function slotPresetsFor(types) {
   });
   return slots.length ? slots : ['全天', '上午', '下午', '晚上'];
 }
+/** 月曆固定顯示「這週的週日」到「今天往後一個月」，不提供翻頁——回傳 {start: Date, weeks: 週數} */
+function calendarRange() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay());
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+  const totalDays = Math.round((end - start) / 86400000) + 1;
+  return { start: start, weeks: Math.ceil(totalDays / 7) };
+}
 /**
- * 產生月曆 HTML。
+ * 產生月曆 HTML（固定範圍：這週日～往後一個月，見 calendarRange）。
  * marked: { 'YYYY-MM-DD': {count, allOk, mine, candidate} }
  * opts: { interactive: bool（候選日期可點）, pickAny: bool（任何日期可點，建立模式用） }
  */
-function calendarHtml(y, m, marked, opts) {
+function calendarHtml(marked, opts) {
   opts = opts || {};
   marked = marked || {};
-  const first = new Date(y, m - 1, 1);
-  const startDow = first.getDay();
-  const daysInMonth = new Date(y, m, 0).getDate();
-  const prevMonthDays = new Date(y, m - 1, 0).getDate();
+  const range = calendarRange();
   const today = todayStr();
   let html = '<div class="cal-grid">';
   WEEKDAYS.forEach(function (w, i) {
     html += '<div class="cal-dow' + (i === 0 ? ' sun' : i === 6 ? ' sat' : '') + '">' + w + '</div>';
   });
-  for (let i = 0; i < 42; i++) {
-    const dayNum = i - startDow + 1;
-    let dateStr, disp, inMonth = true;
-    if (dayNum < 1) { disp = prevMonthDays + dayNum; dateStr = ''; inMonth = false; }
-    else if (dayNum > daysInMonth) { disp = dayNum - daysInMonth; dateStr = ''; inMonth = false; }
-    else { disp = dayNum; dateStr = y + '-' + pad2(m) + '-' + pad2(dayNum); }
-    if (!inMonth) {
-      html += '<div class="cal-cell"><div class="cal-day other-month">' + disp + '</div></div>';
-      continue;
-    }
+  for (let i = 0; i < range.weeks * 7; i++) {
+    const d = new Date(range.start.getFullYear(), range.start.getMonth(), range.start.getDate() + i);
+    const y = d.getFullYear(), m = d.getMonth() + 1, dayNum = d.getDate();
+    const dateStr = y + '-' + pad2(m) + '-' + pad2(dayNum);
+    const disp = (dayNum === 1 || i === 0) ? (m + '/' + dayNum) : String(dayNum);
     const mk = marked[dateStr];
     const total = State.eventData ? State.eventData.event.participantCount : 0;
-    let cls = 'cal-day', inner = String(disp);
+    let cls = 'cal-day', inner = disp;
     if (mk && mk.candidate) {
       cls += ' candidate';
       if (mk.allOk) { /* 全員 OK 蓋星 */ }
@@ -333,15 +332,11 @@ function calendarHtml(y, m, marked, opts) {
   html += '</div>';
   return html;
 }
-function calendarHeaderHtml(y, m, allowNav) {
-  return '<div class="cal-header">' +
-    '<div class="cal-title">' + y + ' 年 ' + m + ' 月</div>' +
-    (allowNav
-      ? '<div class="cal-nav">' +
-        '<button class="btn btn-sm btn-white" onclick="App.calPrev()">‹</button>' +
-        '<button class="btn btn-sm btn-white" onclick="App.calNext()">›</button></div>'
-      : '') +
-    '</div>';
+function calendarHeaderHtml() {
+  const range = calendarRange();
+  const end = new Date(range.start.getFullYear(), range.start.getMonth(), range.start.getDate() + range.weeks * 7 - 1);
+  const label = (range.start.getMonth() + 1) + '/' + range.start.getDate() + ' – ' + (end.getMonth() + 1) + '/' + end.getDate();
+  return '<div class="cal-header"><div class="cal-title">' + label + '</div></div>';
 }
 function calLegendHtml() {
   return '<div class="cal-legend">' +
@@ -402,7 +397,7 @@ function slotPickerModal(dateStr, presets, takenSlots, titleText, onConfirm) {
   };
 }
 // ===================== 建立活動 =====================
-const NewForm = { types: new Set(), dateSlots: {}, cursor: null, sourceEventId: null };
+const NewForm = { types: new Set(), dateSlots: {}, sourceEventId: null };
 
 async function renderNew(hash) {
   const view = $('#view');
@@ -415,8 +410,6 @@ async function renderNew(hash) {
   NewForm.sourceEventId = m ? m[1] : null;
   NewForm.types = new Set();
   NewForm.dateSlots = {};
-  const now = new Date();
-  NewForm.cursor = { y: now.getFullYear(), m: now.getMonth() + 1 };
   let prefill = null;
   if (NewForm.sourceEventId) {
     view.innerHTML = '<div class="loading-card"><div class="loading-star">★</div><p>複製上一場的設定…</p></div>';
@@ -490,8 +483,8 @@ function renderNewCalendar() {
     marked[d] = { candidate: true, mine: true, count: 0 };
   });
   $('#nf-cal').innerHTML =
-    calendarHeaderHtml(NewForm.cursor.y, NewForm.cursor.m, true) +
-    calendarHtml(NewForm.cursor.y, NewForm.cursor.m, marked, { pickAny: true });
+    calendarHeaderHtml() +
+    calendarHtml(marked, { pickAny: true });
 }
 function renderNewPicked() {
   const area = $('#nf-picked');
@@ -554,11 +547,6 @@ async function renderVote(eventId) {
     const data = await Data.getEventPayload(eventId, State.user);
     State.eventData = data;
     State.myVotes = new Set(data.me ? data.me.votes : []);
-    if (!State.calCursor || State.calCursor.eventId !== eventId) {
-      const firstDate = data.options.dates.length ? data.options.dates[0].date : todayStr();
-      const p = firstDate.split('-');
-      State.calCursor = { y: Number(p[0]), m: Number(p[1]), eventId: eventId };
-    }
     renderVoteMain(false);
     startSync();
   } catch (e) {
@@ -672,7 +660,6 @@ function leadingMessage(data) {
   return fmtMD(best.date) + ' 目前 ' + best.voterCount + ' 人可以，領先中！';
 }
 function dateSectionHtml(data) {
-  const cur = State.calCursor;
   const marked = {};
   const mineDates = {};
   data.options.dates.forEach(function (o) { if (State.myVotes.has(o.optionId)) mineDates[o.date] = true; });
@@ -682,8 +669,8 @@ function dateSectionHtml(data) {
   const lead = leadingMessage(data);
   return '<div><span class="section-label yellow">選日期</span>' +
     '<div class="card card-white">' +
-    calendarHeaderHtml(cur.y, cur.m, true) +
-    calendarHtml(cur.y, cur.m, marked, { readonly: false, pickAny: data.votingOpen }) +
+    calendarHeaderHtml() +
+    calendarHtml(marked, { readonly: false, pickAny: data.votingOpen }) +
     slotPanelHtml(data) +
     calLegendHtml() +
     (lead ? '<div class="cal-news">' + esc(lead) + '</div>' : '') +
@@ -898,12 +885,6 @@ function startSync() {
     toast(e && e.message === 'EVENT_NOT_FOUND' ? '這場活動已被刪除' : '連線中斷，請重新整理頁面', 'err');
   });
 }
-function shiftMonth(cur, dir) {
-  let y = cur.y, m = cur.m + dir;
-  if (m < 1) { m = 12; y--; }
-  if (m > 12) { m = 1; y++; }
-  return Object.assign({}, cur, { y: y, m: m });
-}
 function pickDate(dateStr) {
   if (location.hash.indexOf('#/new') === 0) {
     const taken = NewForm.dateSlots[dateStr] || [];
@@ -932,11 +913,6 @@ async function renderResults(eventId) {
     const data = await Data.getEventPayload(eventId, State.user);
     State.eventData = data;
     State.myVotes = new Set(data.me ? data.me.votes : []);
-    if (!State.calCursor || State.calCursor.eventId !== eventId) {
-      const firstDate = data.options.dates.length ? data.options.dates[0].date : todayStr();
-      const p = firstDate.split('-');
-      State.calCursor = { y: Number(p[0]), m: Number(p[1]), eventId: eventId };
-    }
     renderResultsMain();
     startSync();
   } catch (e) {
@@ -949,7 +925,6 @@ function renderResultsMain() {
   const data = State.eventData;
   if (!data) return;
   const ev = data.event;
-  const cur = State.calCursor;
   // 月曆熱力圖（唯讀）
   const marked = {};
   data.stats.dates.forEach(function (d) {
@@ -967,8 +942,8 @@ function renderResultsMain() {
 
   // 日期熱力月曆
   html += '<div><span class="section-label yellow">日期熱力圖</span><div class="card card-white">' +
-    calendarHeaderHtml(cur.y, cur.m, true) +
-    calendarHtml(cur.y, cur.m, marked, { readonly: true }) +
+    calendarHeaderHtml() +
+    calendarHtml(marked, { readonly: true }) +
     calLegendHtml() +
     (leadingMessage(data) ? '<div class="cal-news">' + esc(leadingMessage(data)) + '</div>' : '') +
     '</div></div>';
@@ -1262,16 +1237,6 @@ function deleteEventAction() {
   });
 }
 // ===================== 全域 App（inline onclick 用） =====================
-function calNavAll(dir) {
-  if (location.hash.indexOf('#/new') === 0) {
-    NewForm.cursor = shiftMonth(NewForm.cursor, dir);
-    renderNewCalendar();
-  } else if (State.eventData) {
-    State.calCursor = shiftMonth(State.calCursor, dir);
-    if (location.hash.indexOf('/results') >= 0) renderResultsMain();
-    else renderVoteMain(true);
-  }
-}
 const App = {
   closeModal: closeModal,
   signOut: function () { Auth.signOut(); },
@@ -1289,8 +1254,6 @@ const App = {
   },
   nicknameModal: nicknameModal,
   pickDate: pickDate,
-  calPrev: function () { calNavAll(-1); },
-  calNext: function () { calNavAll(1); },
   removeNewSlot: function (d, s) {
     if (NewForm.dateSlots[d]) {
       NewForm.dateSlots[d] = NewForm.dateSlots[d].filter(function (x) { return x !== s; });
