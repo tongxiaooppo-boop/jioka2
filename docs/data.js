@@ -40,6 +40,12 @@ function safeNickname(name, email, uid) {
   return '揪咖' + str(uid).substring(0, 6);
 }
 function validDateStr(s) { return /^\d{4}-\d{2}-\d{2}$/.test(str(s)); }
+function todayStr() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+/** 候選日期不能是今天以前——跟前端月曆的限制一致，這裡再擋一次避免繞過 UI 直接呼叫 */
+function isNotPastDate(s) { return str(s) >= todayStr(); }
 /** 只允許 http/https 開頭的連結，擋掉 javascript: 等會在前端被當連結渲染執行的 scheme */
 function safeHttpUrl(v) {
   const s = str(v).trim();
@@ -258,7 +264,7 @@ export async function createEvent(user, params) {
 
     const batch = writeBatch(db);
     dates.forEach((d) => {
-      if (!validDateStr(d.date)) return;
+      if (!validDateStr(d.date) || !isNotPastDate(d.date)) return;
       const ref = doc(collection(db, 'events', eventId, 'options'));
       batch.set(ref, {
         optionType: 'date', date: str(d.date), timeSlot: str(d.timeSlot).trim().substring(0, 10) || '全天',
@@ -371,6 +377,7 @@ export async function addOption(eventId, user, params) {
   const existing = optionsSnap.docs.map((d) => d.data()).filter((o) => !o.isDeleted);
   if (optType === 'date') {
     if (!validDateStr(params.date)) fail('BAD_REQUEST', '日期格式需為 YYYY-MM-DD');
+    if (!isNotPastDate(params.date)) fail('BAD_REQUEST', '候選日期不能是今天以前');
     const slot = str(params.timeSlot).trim().substring(0, 10) || '全天';
     const dup = existing.some((o) => o.optionType === 'date' && o.date === str(params.date) && o.timeSlot === slot);
     if (dup) return { added: false, message: '這個日期時段已存在' };
