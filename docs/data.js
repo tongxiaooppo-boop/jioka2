@@ -234,6 +234,7 @@ export async function createEvent(user, params) {
   const description = str(params.description).trim().substring(0, 500);
   const dates = params.dates || [], places = params.places || [];
   if (!dates.length && !places.length) fail('BAD_REQUEST', '請至少新增一個候選日期或地點');
+  if (params.deadline && new Date(params.deadline).getTime() <= Date.now()) fail('BAD_REQUEST', '截止時間不能是過去的時間');
 
   let eventId = genId(EVENT_ID_LEN), tries = 0;
   let evRef = doc(db, 'events', eventId);

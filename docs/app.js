@@ -40,6 +40,11 @@ function fmtDT(iso) {
   if (isNaN(d)) return '';
   return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
 }
+/** 給 <input type="datetime-local"> 用：把一個 Date 轉成該元件要的 "YYYY-MM-DDTHH:MM" 字串（本地時區） */
+function toLocalDateTimeInput(d) {
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
+    'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+}
 function eventLink(eventId) {
   return location.origin + location.pathname + '#/e/' + eventId;
 }
@@ -433,7 +438,7 @@ async function renderNew(hash) {
       '<div class="field"><label>說明文字</label>' +
         '<textarea class="textarea" id="nf-desc" maxlength="500" placeholder="想跟大家說的話…">' + esc(prefill ? prefill.event.description : '') + '</textarea></div>' +
       '<div class="field"><label>投票截止時間（可留空代表不設限）</label>' +
-        '<input class="input" id="nf-deadline" type="datetime-local"></div>' +
+        '<input class="input" id="nf-deadline" type="datetime-local" min="' + toLocalDateTimeInput(new Date()) + '"></div>' +
     '</div>' +
     '<div><span class="section-label yellow">選日期</span>' +
       '<div class="card card-white"><div id="nf-cal"></div>' +
@@ -1106,7 +1111,7 @@ function renderAdminOwnerArea(data, detail) {
     '<button class="btn btn-sm btn-yellow" onclick="App.saveEventSettings()">儲存設定</button></div>' +
 
     '<div class="card admin-section"><h3>⏰ 投票截止時間</h3>' +
-    '<div class="field"><input class="input" id="adm-deadline" type="datetime-local" value="' + isoToLocalInput(ev.deadline) + '">' +
+    '<div class="field"><input class="input" id="adm-deadline" type="datetime-local" min="' + toLocalDateTimeInput(new Date()) + '" value="' + isoToLocalInput(ev.deadline) + '">' +
     '<div class="hint">設為未來時間＝延長或重新開放；清空＝不限時間。</div></div>' +
     '<div class="gap8"><button class="btn btn-sm btn-yellow" onclick="App.setDeadlineAction()">儲存截止時間</button>' +
     (ev.status === 'open' ? '<button class="btn btn-sm btn-pink" onclick="App.closeEventAction()">🔒 立即提前結束投票</button>' : '') +
