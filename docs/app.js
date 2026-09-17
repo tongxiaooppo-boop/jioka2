@@ -45,6 +45,13 @@ function toLocalDateTimeInput(d) {
   return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
     'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
 }
+/** 建立活動時截止時間欄位的預設值：7 天後晚上 8 點 */
+function defaultDeadlineInput() {
+  const d = new Date();
+  d.setDate(d.getDate() + 7);
+  d.setHours(20, 0, 0, 0);
+  return toLocalDateTimeInput(d);
+}
 function eventLink(eventId) {
   return location.origin + location.pathname + '#/e/' + eventId;
 }
@@ -437,8 +444,8 @@ async function renderNew(hash) {
         '</div></div>' +
       '<div class="field"><label>說明文字</label>' +
         '<textarea class="textarea" id="nf-desc" maxlength="500" placeholder="想跟大家說的話…">' + esc(prefill ? prefill.event.description : '') + '</textarea></div>' +
-      '<div class="field"><label>投票截止時間（可留空代表不設限）</label>' +
-        '<input class="input" id="nf-deadline" type="datetime-local" min="' + toLocalDateTimeInput(new Date()) + '"></div>' +
+      '<div class="field"><label>投票截止時間（預設 7 天後晚上 8 點，清空代表不設限）</label>' +
+        '<input class="input" id="nf-deadline" type="datetime-local" min="' + toLocalDateTimeInput(new Date()) + '" value="' + defaultDeadlineInput() + '"></div>' +
     '</div>' +
     '<div><span class="section-label yellow">選日期</span>' +
       '<div class="card card-white"><div id="nf-cal"></div>' +
