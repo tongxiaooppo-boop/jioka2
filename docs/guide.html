@@ -204,6 +204,17 @@
           <li>Authentication →「Settings」→「已授權網域」：確認之後要用的 GitHub Pages 網域（<code class="inline">&lt;你的帳號&gt;.github.io</code>）有在清單裡，沒有就手動加入</li>
         </ol>
         <div class="field-note">不需要像一代那樣額外去 Google Cloud Console 申請 OAuth 用戶端、也不需要「發布正式版」——Firebase 幫你處理好了，任何 Google 帳號都能直接登入。</div>
+        <div class="field-note warn">⚠️ 這步做完先別急著跳過去，還有一個容易漏掉的地方，見下面 <strong>步驟 B-2</strong>——沒做這步，登入按鈕點下去會直接出現「已封鎖存取權：授權錯誤（origin_mismatch）」。</div>
+      </div>
+      <div class="step">
+        <h3 style="margin:0 0 6px"><span class="letter">B-2</span> 到 Google Cloud Console 補一個「已授權的 JavaScript 來源」</h3>
+        <p class="lead" style="margin:0 0 6px">Firebase Authentication 的「已授權網域」只管 Firebase Auth 本身；但登入按鈕實際用的是 Google Identity Services（GIS）那組 Client ID，這組 Client ID 在 <strong>Google Cloud Console</strong>（跟 Firebase 主控台是不同介面，但背後是同一個專案）另外有一份「已授權的 JavaScript 來源」清單，Firebase 新增 Client ID 時不會自動幫你填。</p>
+        <ol>
+          <li>前往 <span class="mono">console.cloud.google.com</span>，左上角專案切換器選到跟 Firebase 同名的專案（例如 <code class="inline">jioka2</code>）——如果「近期專案」找不到，用搜尋框打專案名稱或切到「全部」分頁</li>
+          <li>左側選單「API 和服務」→「憑證」（或「Google Auth Platform」→「用戶端」），找到跟步驟 B 那組一樣的 OAuth 2.0 用戶端 ID，點進去</li>
+          <li>「已授權的 JavaScript 來源」→ 新增：<code class="inline">https://&lt;你的帳號&gt;.github.io</code>（只到 <code class="inline">.io</code> 結尾，<strong>不要</strong>加 <code class="inline">/jioka2/</code> 路徑，也不要加結尾斜線）→ 儲存</li>
+        </ol>
+        <div class="field-note">Google 這邊的設定生效有時需要等幾分鐘，存好後如果登入還是失敗，先重新整理頁面、等一下再試。</div>
       </div>
     </section>
 
@@ -211,8 +222,10 @@
       <h2><span class="num">C</span>建立 Firestore 資料庫 + 部署安全規則</h2>
       <div class="step">
         <ol>
-          <li>左側選單「Firestore Database」→「建立資料庫」→ 選一個離使用者近的地區（例如 <code class="inline">asia-east1</code>）→ 用「正式版模式（production）」啟動（規則之後會整份覆蓋掉，選哪個起始模式都沒差）</li>
-          <li>把本專案 <code class="inline">firestore.rules</code> 整份內容複製，貼到 Firestore Database →「規則」分頁，覆蓋掉預設內容 → 發布</li>
+          <li>左側選單「Firestore Database」→「建立資料庫」→ 如果看到「選取版本」（Standard / Enterprise）這一步，選 <strong>Standard 版</strong>（這是 Firebase 較新版介面才有的選項，跟安全規則無關，選 Standard 就對）</li>
+          <li>資料庫 ID 用預設的 <code class="inline">(default)</code>，位置選一個離使用者近的地區（例如 <code class="inline">asia-east1</code>，選定後不能再改）</li>
+          <li>「安全性規則」起始模式選「以正式版模式啟動」→ 建立（規則之後會整份覆蓋掉，選哪個起始模式其實都沒差）</li>
+          <li>建立完成後，切到「規則」分頁，把本專案 <code class="inline">firestore.rules</code> 整份內容複製貼上，覆蓋掉預設內容 → 發布</li>
           <li>（可選，若你熟 CLI）也可以用 Firebase CLI 部署：
             <pre>npm i -g firebase-tools
 firebase login
@@ -233,12 +246,13 @@ firebase deploy --only firestore:rules</pre>
     apiKey: '...',
     authDomain: 'your-project.firebaseapp.com',
     projectId: 'your-project',
-    storageBucket: 'your-project.appspot.com',
+    storageBucket: 'your-project.firebasestorage.app',
     messagingSenderId: '...',
     appId: '...',
   },
   GOOGLE_CLIENT_ID: 'xxxxx.apps.googleusercontent.com',
 };</pre>
+        <div class="field-note">apiKey 不是密碼，設計上就可以放在前端程式碼裡公開，真正管控權限的是 <code class="inline">firestore.rules</code>。</div>
       </div>
     </section>
 
@@ -250,7 +264,7 @@ firebase deploy --only firestore:rules</pre>
           <li>repo 頁面 →「Settings」→「Pages」：Source 選「Deploy from a branch」，Branch 選 <code class="inline">main</code>，資料夾選「<code class="inline">/docs</code>」→ Save</li>
           <li>等 1～2 分鐘，開啟 <code class="inline">https://&lt;你的帳號&gt;.github.io/jioka2/</code></li>
         </ol>
-        <div class="field-note warn">實際網域要跟步驟 B 的「已授權網域」一致，不然登入會失敗。</div>
+        <div class="field-note warn">實際網域要跟步驟 B 的「已授權網域」<strong>以及</strong>步驟 B-2 的「已授權的 JavaScript 來源」都一致，兩邊都要加，缺一個登入都會失敗。</div>
       </div>
     </section>
 
@@ -274,7 +288,7 @@ firebase deploy --only firestore:rules</pre>
         <div class="role-card owner">
           <div class="role-title">👑 主揪（發起人）</div>
           <ol>
-            <li>首頁「🎉 發起揪咖」→ 登入 → 填名稱、類型、說明、截止時間</li>
+            <li>首頁「🎉 發起揪咖」→ 登入 → 填名稱、類型、說明、截止時間（預設帶入 7 天後晚上 8 點，可清空代表不設限）</li>
             <li>月曆點日期 → 勾時段（可複選/自訂）；填地點名稱 + Map 連結，可加多個</li>
             <li>送出後把連結丟 LINE 群組（Modal 內建 LINE 分享）</li>
             <li>管理後台可以：看明細、刪留言/選項、延長或提前結束投票、指定次管理者、標記最終方案、下載 CSV</li>
@@ -287,6 +301,10 @@ firebase deploy --only firestore:rules</pre>
             <li>點候選日期勾時段；點還不是候選的日期可「提議新日期」</li>
             <li>地點點「我可以」（可複選），也能「新增候選地點」；截止前隨時可改</li>
           </ol>
+        </div>
+        <div class="role-card" style="grid-column:1/-1">
+          <div class="role-title">📅 月曆怎麼看更遠的日期</div>
+          <p style="margin:0;font-size:14px;color:var(--ink-soft)">月曆固定顯示「這週日～往後 5 週」，今天以前的日子一律不能選（灰色）。想選更遠的日期，用月曆上方「‹ 往前一週」「往後一週 ›」一週一週捲動，不會整批跳一個月。</p>
         </div>
         <div class="role-card coadmin">
           <div class="role-title">🤝 次管理者</div>
@@ -327,8 +345,12 @@ firebase deploy --only firestore:rules</pre>
     <section id="faq">
       <h2><span class="num">?</span>常見問題</h2>
       <details>
-        <summary>登入按鈕沒出現，或登入失敗？</summary>
-        <p>檢查 Firebase Authentication →「Settings」→「已授權網域」是否包含你實際開啟的網域。<code class="inline">config.js</code> 裡的 <code class="inline">GOOGLE_CLIENT_ID</code> 要跟 Authentication → Sign-in method → Google 那組一致。</p>
+        <summary>登入按鈕點下去出現「已封鎖存取權：授權錯誤（origin_mismatch）」？</summary>
+        <p>這是最常踩到的一個：漏了 <a href="#step-b">步驟 B-2</a>。Firebase「已授權網域」跟 Google Cloud Console 的「已授權的 JavaScript 來源」是兩份不同的清單，兩邊都要加上 <code class="inline">https://&lt;你的帳號&gt;.github.io</code> 才行。</p>
+      </details>
+      <details>
+        <summary>登入按鈕根本沒出現？</summary>
+        <p><code class="inline">config.js</code> 裡的 <code class="inline">GOOGLE_CLIENT_ID</code> 要跟 Authentication → Sign-in method → Google 那組一致；也確認 <code class="inline">index.html</code> 有正常載入 <code class="inline">https://accounts.google.com/gsi/client</code>（開瀏覽器開發工具看 Console 有沒有錯誤）。</p>
       </details>
       <details>
         <summary>跟舊版 jioka（試算表版）資料會混在一起嗎？</summary>
@@ -342,6 +364,10 @@ firebase deploy --only firestore:rules</pre>
         <summary>資料會不會遺失？誰看得到？</summary>
         <p>所有資料存在你的 Firebase 專案 Firestore 裡，權限完全由 <code class="inline">firestore.rules</code> 把關（沒有後端伺服器）。刪除活動/選項/留言都是軟刪除，要復原可以在 Firebase Console 手動改欄位。</p>
       </details>
+      <details>
+        <summary>GitHub repo 是公開的，別人會看到我朋友的揪團紀錄嗎？</summary>
+        <p>不會。repo 公開只會讓別人看到程式碼（含 <code class="inline">config.js</code> 裡的 <code class="inline">apiKey</code>，這個值設計上本來就可以公開，不是密碼）。實際的活動/投票資料存在 Firestore，規則裡沒有任何一條允許「列出全部活動」，只有活動的主揪/次管理者能查到自己相關的活動列表，其他人必須拿到那場活動專屬的 8 碼連結才看得到內容。</p>
+      </details>
     </section>
 
     <section id="privacy">
@@ -352,6 +378,7 @@ firebase deploy --only firestore:rules</pre>
           <li>公開可讀的活動資料（給任何持有連結的人看）完全不含任何人的 Email，只有暱稱</li>
           <li>Email 只存在 <code class="inline">private/roles</code>（管理者名單）與 <code class="inline">participantsPrivate</code>（每人的 Email），只有主揪/次管理者、以及本人自己讀得到</li>
           <li>沒有後端伺服器，所有資料存取規則寫在 <code class="inline">firestore.rules</code>，是整個系統唯一的安全邊界，改動請小心測試</li>
+          <li>上線前 <code class="inline">firestore.rules</code> / <code class="inline">docs/data.js</code> / <code class="inline">docs/app.js</code> 經過兩輪獨立審查（找出並修掉 XSS、權限繞過、暱稱唯一性沒綁定等問題），細節不在這裡重複，改動這幾個檔案時建議重新走一次審查而不是憑印象</li>
         </ul>
       </div>
     </section>
