@@ -86,7 +86,14 @@ service cloud.firestore {
           request.resource.data.status in ['open','closed','confirmed','deleted'] &&
           request.resource.data.title is string && request.resource.data.title.size() > 0 &&
           request.resource.data.title.size() <= 50 &&
-          request.resource.data.description.size() <= 500 &&
+          request.resource.data.type is string &&
+          request.resource.data.description is string && request.resource.data.description.size() <= 500 &&
+          (request.resource.data.deadline == null || request.resource.data.deadline is timestamp) &&
+          request.resource.data.confirmedDateId is string && request.resource.data.confirmedPlaceId is string &&
+          request.resource.data.coAdminUids is list &&
+          request.resource.data.keys().hasAll(
+            ['title','type','description','status','deadline','confirmedDateId','confirmedPlaceId',
+             'ownerUid','coAdminUids','createdAt']) &&
           request.resource.data.keys().hasOnly(
             ['title','type','description','status','deadline','confirmedDateId','confirmedPlaceId',
              'ownerUid','coAdminUids','createdAt'])) ||
@@ -138,7 +145,8 @@ service cloud.firestore {
           isVotingOpen(eventId) &&
           request.resource.data.optionIds is list && request.resource.data.optionIds.size() <= 100 &&
           request.resource.data.keys().hasOnly(['optionIds','votedAt']);
-        allow delete: if signedIn() && request.auth.uid == uid;
+        // 撤票一樣要投票還開著才能做，避免截止後仍可改變「全員 OK」等統計判定
+        allow delete: if signedIn() && request.auth.uid == uid && isVotingOpen(eventId);
       }
 
       // ---- 留言 ----
@@ -195,7 +203,13 @@ service cloud.firestore {
         allow create: if signedIn() && nickKey.size() <= 20 &&
           request.resource.data.uid == request.auth.uid &&
           request.resource.data.keys().hasOnly(['uid']);
-        allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+        // 只有在「這已經不是我目前正在使用的暱稱」時才能刪除，否則會出現：
+        // 設暱稱 A → 自己刪掉 nicknames/a 這份 reservation → participants.nickname 還是 A，
+        // 但 A 這個 key 空出來了，第二個人也能合法搶到 A，唯一性保證就破功（見複審 M-N3）。
+        // setNickname 的流程本來就是「先寫新 participants、再刪舊 reservation」，
+        // 執行到刪除這步時 participants.nickname 已經指向新暱稱，這條規則不會擋到正常改名流程。
+        allow delete: if signedIn() && resource.data.uid == request.auth.uid &&
+          get(/databases/$(db)/documents/events/$(eventId)/participants/$(request.auth.uid)).data.nickname.lower() != nickKey;
         allow update: if false;
       }
     }

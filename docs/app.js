@@ -888,7 +888,12 @@ function startSync() {
     if (hash.indexOf('/admin') >= 0) return; // 後台操作期間不打擾
     if (hash.indexOf('/results') >= 0) renderResultsMain();
     else renderVoteMain(true);
-  }, function () { /* 即時同步失敗靜默，等下次變動再重試 */ });
+  }, function (e) {
+    // 活動被刪除、或訂閱本身出錯（例如網路斷線恢復後 SDK 內部狀態卡住）：
+    // 停止訂閱並提示使用者重新整理，不要一直靜默掛著一個壞掉的即時同步
+    stopSync();
+    toast(e && e.message === 'EVENT_NOT_FOUND' ? '這場活動已被刪除' : '連線中斷，請重新整理頁面', 'err');
+  });
 }
 function shiftMonth(cur, dir) {
   let y = cur.y, m = cur.m + dir;
