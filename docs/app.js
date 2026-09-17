@@ -322,10 +322,13 @@ function calendarHtml(y, m, marked, opts) {
     }
     if (dateStr === today) cls += ' today';
     if (State.selectedDate === dateStr) cls += ' mine';
-    const clickable = (opts.pickAny || (mk && mk.candidate)) && !opts.readonly;
+    const isPast = dateStr < today;
+    if (isPast) cls += ' past-day';
+    const clickable = (opts.pickAny || (mk && mk.candidate)) && !opts.readonly && !isPast;
     const onclick = clickable ? ' onclick="App.pickDate(\'' + dateStr + '\')"' : '';
+    const style = isPast ? ' style="opacity:.4;cursor:default"' : '';
     const star = (mk && mk.allOk && mk.candidate) ? STAR_SVG : '';
-    html += '<div class="cal-cell"><div class="' + cls + '"' + onclick + '>' + star + inner + '</div></div>';
+    html += '<div class="cal-cell"><div class="' + cls + '"' + onclick + style + '>' + star + inner + '</div></div>';
   }
   html += '</div>';
   return html;
@@ -1182,7 +1185,7 @@ function adminAddDate() {
   if (!ensureHasNickname()) return;
   openModal(
     '<h3>新增候選日期</h3>' +
-    '<div class="field"><label>日期</label><input class="input" id="aad-date" type="date"></div>' +
+    '<div class="field"><label>日期</label><input class="input" id="aad-date" type="date" min="' + todayStr() + '"></div>' +
     '<div class="field"><label>時段</label><input class="input" id="aad-slot" maxlength="10" placeholder="全天 / 上午 / 下午 / 晚上，或自訂"></div>' +
     '<div class="modal-actions"><button class="btn btn-white" onclick="App.closeModal()">取消</button>' +
     '<button class="btn btn-yellow" id="aad-save">加入</button></div>'
