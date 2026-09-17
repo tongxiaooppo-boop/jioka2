@@ -12,6 +12,7 @@ const State = {
   eventData: null,     // 目前活動 payload
   eventId: null,
   unsubEvent: null,    // 即時同步（取代原本輪詢計時器）
+  calWeekOffset: 0,     // 投票頁/結果頁月曆視窗往後捲動了幾週
   selectedDate: null,  // 月曆上被點開的日期
   myVotes: new Set(),  // 本地樂觀投票狀態
   voteTimer: null,     // 投票 debounce
@@ -292,22 +293,22 @@ function slotPresetsFor(types) {
   return slots.length ? slots : ['全天', '上午', '下午', '晚上'];
 }
 /** 月曆固定顯示「這週的週日」到「今天往後一個月」，不提供翻頁——回傳 {start: Date, weeks: 週數} */
-function calendarRange() {
+const CAL_WINDOW_WEEKS = 5; // 顯示範圍固定 5 週（約一個月），用 weekOffset 一週一週往前捲動來看更遠的日期
+/** weekOffset：從「這週的週日」往後推幾週當作視窗起點，0 = 這週日開始 */
+function calendarRange(weekOffset) {
   const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay());
-  const end = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
-  const totalDays = Math.round((end - start) / 86400000) + 1;
-  return { start: start, weeks: Math.ceil(totalDays / 7) };
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay() + (weekOffset || 0) * 7);
+  return { start: start, weeks: CAL_WINDOW_WEEKS };
 }
 /**
- * 產生月曆 HTML（固定範圍：這週日～往後一個月，見 calendarRange）。
+ * 產生月曆 HTML（固定寬度 5 週的捲動視窗，見 calendarRange）。
  * marked: { 'YYYY-MM-DD': {count, allOk, mine, candidate} }
  * opts: { interactive: bool（候選日期可點）, pickAny: bool（任何日期可點，建立模式用） }
  */
-function calendarHtml(marked, opts) {
+function calendarHtml(marked, opts, weekOffset) {
   opts = opts || {};
   marked = marked || {};
-  const range = calendarRange();
+  const range = calendarRange(weekOffset);
   const today = todayStr();
   let html = '<div class="cal-grid">';
   WEEKDAYS.forEach(function (w, i) {
@@ -344,11 +345,16 @@ function calendarHtml(marked, opts) {
   html += '</div>';
   return html;
 }
-function calendarHeaderHtml() {
-  const range = calendarRange();
+function calendarHeaderHtml(weekOffset, allowNav) {
+  const range = calendarRange(weekOffset);
   const end = new Date(range.start.getFullYear(), range.start.getMonth(), range.start.getDate() + range.weeks * 7 - 1);
   const label = (range.start.getMonth() + 1) + '/' + range.start.getDate() + ' – ' + (end.getMonth() + 1) + '/' + end.getDate();
-  return '<div class="cal-header"><div class="cal-title">' + label + '</div></div>';
+  const nav = allowNav
+    ? '<div class="cal-nav">' +
+      '<button class="btn btn-sm btn-white" onclick="App.calPrev()"' + ((weekOffset || 0) <= 0 ? ' disabled style="opacity:.4"' : '') + '>‹ 往前一週</button>' +
+      '<button class="btn btn-sm btn-white" onclick="App.calNext()">往後一週 ›</button></div>'
+    : '';
+  return '<div class="cal-header"><div class="cal-title">' + label + '</div>' + nav + '</div>';
 }
 function calLegendHtml() {
   return '<div class="cal-legend">' +
@@ -409,7 +415,7 @@ function slotPickerModal(dateStr, presets, takenSlots, titleText, onConfirm) {
   };
 }
 // ===================== 建立活動 =====================
-const NewForm = { types: new Set(), dateSlots: {}, sourceEventId: null };
+const NewForm = { types: new Set(), dateSlots: {}, sourceEventId: null, weekOffset: 0 };
 
 async function renderNew(hash) {
   const view = $('#view');
@@ -422,6 +428,7 @@ async function renderNew(hash) {
   NewForm.sourceEventId = m ? m[1] : null;
   NewForm.types = new Set();
   NewForm.dateSlots = {};
+  NewForm.weekOffset = 0;
   let prefill = null;
   if (NewForm.sourceEventId) {
     view.innerHTML = '<div class="loading-card"><div class="loading-star">★</div><p>複製上一場的設定…</p></div>';
@@ -495,8 +502,8 @@ function renderNewCalendar() {
     marked[d] = { candidate: true, mine: true, count: 0 };
   });
   $('#nf-cal').innerHTML =
-    calendarHeaderHtml() +
-    calendarHtml(marked, { pickAny: true });
+    calendarHeaderHtml(NewForm.weekOffset, true) +
+    calendarHtml(marked, { pickAny: true }, NewForm.weekOffset);
 }
 function renderNewPicked() {
   const area = $('#nf-picked');
@@ -553,6 +560,7 @@ async function submitNew() {
 async function renderVote(eventId) {
   State.eventId = eventId;
   State.selectedDate = null;
+  State.calWeekOffset = 0;
   const view = $('#view');
   view.innerHTML = '<div class="loading-card"><div class="loading-star">★</div><p>揪咖資料載入中…</p></div>';
   try {
@@ -681,8 +689,8 @@ function dateSectionHtml(data) {
   const lead = leadingMessage(data);
   return '<div><span class="section-label yellow">選日期</span>' +
     '<div class="card card-white">' +
-    calendarHeaderHtml() +
-    calendarHtml(marked, { readonly: false, pickAny: data.votingOpen }) +
+    calendarHeaderHtml(State.calWeekOffset, true) +
+    calendarHtml(marked, { readonly: false, pickAny: data.votingOpen }, State.calWeekOffset) +
     slotPanelHtml(data) +
     calLegendHtml() +
     (lead ? '<div class="cal-news">' + esc(lead) + '</div>' : '') +
@@ -915,10 +923,23 @@ function pickDate(dateStr) {
   State.selectedDate = (State.selectedDate === dateStr) ? null : dateStr;
   renderVoteMain(true);
 }
+/** 月曆視窗一週一週往前/往後捲動（拿掉月份翻頁後改成這個，見 calendarRange） */
+function calNavWeek(dir) {
+  if (location.hash.indexOf('#/new') === 0) {
+    NewForm.weekOffset = Math.max(0, NewForm.weekOffset + dir);
+    renderNewCalendar();
+    return;
+  }
+  if (!State.eventData) return;
+  State.calWeekOffset = Math.max(0, State.calWeekOffset + dir);
+  if (location.hash.indexOf('/results') >= 0) renderResultsMain();
+  else renderVoteMain(true);
+}
 // ===================== 結果統計頁 =====================
 async function renderResults(eventId) {
   State.eventId = eventId;
   State.selectedDate = null;
+  State.calWeekOffset = 0;
   const view = $('#view');
   view.innerHTML = '<div class="loading-card"><div class="loading-star">★</div><p>統計結果計算中…</p></div>';
   try {
@@ -954,8 +975,8 @@ function renderResultsMain() {
 
   // 日期熱力月曆
   html += '<div><span class="section-label yellow">日期熱力圖</span><div class="card card-white">' +
-    calendarHeaderHtml() +
-    calendarHtml(marked, { readonly: true }) +
+    calendarHeaderHtml(State.calWeekOffset, true) +
+    calendarHtml(marked, { readonly: true }, State.calWeekOffset) +
     calLegendHtml() +
     (leadingMessage(data) ? '<div class="cal-news">' + esc(leadingMessage(data)) + '</div>' : '') +
     '</div></div>';
@@ -1266,6 +1287,8 @@ const App = {
   },
   nicknameModal: nicknameModal,
   pickDate: pickDate,
+  calPrev: function () { calNavWeek(-1); },
+  calNext: function () { calNavWeek(1); },
   removeNewSlot: function (d, s) {
     if (NewForm.dateSlots[d]) {
       NewForm.dateSlots[d] = NewForm.dateSlots[d].filter(function (x) { return x !== s; });
